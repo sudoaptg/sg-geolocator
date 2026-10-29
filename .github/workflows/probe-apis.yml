@@ -1,0 +1,24 @@
+name: Probe gazetteer APIs (temporary)
+
+on:
+  push:
+    branches: [ocr-clues]
+    paths: [.github/workflows/probe-apis.yml]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: OneMap search samples
+        run: |
+          for q in "83139" "Blk 123 Tampines" "Tampines MRT Station" "238801" "Ang Mo Kio Avenue 3"; do
+            echo "=== $q"
+            curl -sS -G "https://www.onemap.gov.sg/api/common/elastic/search" \
+              --data-urlencode "searchVal=$q" -d returnGeom=Y -d getAddrDetails=Y -d pageNum=1 -w "\nHTTP %{http_code}\n" | head -c 1500
+            echo
+          done
+      - name: Bus stop dataset sample
+        run: |
+          curl -sS -L https://data.busrouter.sg/v1/stops.min.json -o stops.json -w "HTTP %{http_code} %{size_download} bytes\n"
+          head -c 600 stops.json; echo
+          python3 -c "import json; d=json.load(open('stops.json')); print(type(d).__name__, len(d)); k=next(iter(d)); print('first:', k, d[k] if isinstance(d, dict) else '')"
