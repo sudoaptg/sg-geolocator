@@ -66,9 +66,9 @@ jobs:
       - name: Download Singapore boundary (geoBoundaries ADM0)
         if: steps.photos.outputs.cache-matched-key == ''
         run: |
-          url=$(curl -fsSL https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
+          url=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
                 | python -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])")
-          curl -fsSL "$url" -o sg_boundary.geojson
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "$url" -o sg_boundary.geojson
           python -c "from sg_geolocator.geo import Boundary as B; b=B.from_geojson('sg_boundary.geojson'); assert b.contains(1.3521, 103.8198); assert not b.contains(1.4927, 103.7414); print('boundary ok')"
 
       - name: Fetch reference photos from Mapillary

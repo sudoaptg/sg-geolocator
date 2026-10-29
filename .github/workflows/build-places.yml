@@ -59,9 +59,9 @@ jobs:
           key: torch-hub-${{ env.MODEL }}
       - name: Download Singapore boundary
         run: |
-          url=$(curl -fsSL https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
+          url=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
                 | python -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])")
-          curl -fsSL "$url" -o sg_boundary.geojson
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "$url" -o sg_boundary.geojson
       - name: Build shard ${{ matrix.shard }} of ${{ inputs.shards }}
         env:
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
