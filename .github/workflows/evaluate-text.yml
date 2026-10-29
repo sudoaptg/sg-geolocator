@@ -1,0 +1,50 @@
+name: Evaluate text clues
+
+# Reads signs in held-out Mapillary photos and scores the locations found from them.
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max test photos (empty = all ~1200)"
+        default: ""
+  push:
+    branches: [ocr-clues]
+    paths: [src/sg_geolocator/clues.py, .github/workflows/evaluate-text.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      # The text stage doesn't need torch/transformers.
+      - run: |
+          pip install numpy pillow requests rapidocr_onnxruntime
+          pip install -e . --no-deps
+      - name: Restore cached Mapillary photos (metadata + test split)
+        uses: actions/cache/restore@v4
+        with:
+          path: data/mapillary
+          key: mapillary-15000-0.002-2-none
+          restore-keys: mapillary-15000-0.002-2-
+          fail-on-cache-miss: true
+      - name: Evaluate
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+        run: |
+          sg-geolocate evaluate-text data/mapillary/metadata.csv --hires ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }} \
+            --json-out text-eval.json --md-out text-eval.md
+          cat text-eval.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: text-eval
+          path: text-eval.*

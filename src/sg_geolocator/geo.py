@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
@@ -19,17 +19,22 @@ class Prediction:
     lat: float
     lon: float
     confidence: float
-    source: str  # "exif", "landmark" or "retrieval"
+    source: str  # "exif", "text", "landmark" or "retrieval"
     label: str | None = None  # landmark name or nearest known area
+    evidence: list[str] = field(default_factory=list)  # e.g. which signs were read
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "lat": round(self.lat, 6),
             "lon": round(self.lon, 6),
             "confidence": round(self.confidence, 3),
             "source": self.source,
             "label": self.label,
+            "map": f"https://www.google.com/maps?q={self.lat:.6f},{self.lon:.6f}",
         }
+        if self.evidence:
+            out["evidence"] = self.evidence
+        return out
 
 
 def in_singapore(lat: float, lon: float) -> bool:

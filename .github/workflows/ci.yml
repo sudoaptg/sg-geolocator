@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
@@ -52,3 +51,15 @@ jobs:
           save_index(["a.jpg", "b.jpg"], [(1.30, 103.80), (1.35, 103.90)], ["s1", "s2"], e, "i.npz")
           print("retrieval:", RetrievalIndex("i.npz").predict(img[0], k=2))
           EOF
+      - name: Read a sign with OCR and resolve it with the live gazetteers
+        run: |
+          python - <<'EOF2'
+          from PIL import Image, ImageDraw, ImageFont
+          from sg_geolocator.clues import ClueLocator
+          img = Image.new("RGB", (900, 300), (30, 80, 160))
+          ImageDraw.Draw(img).text((40, 100), "Bus Stop 83139", font=ImageFont.load_default(size=64), fill="white")
+          img.save("sign.jpg")
+          res = ClueLocator().locate("sign.jpg")
+          print(res and res.text, res and res.evidence)
+          assert res and abs(res.lat - 1.3145) < 0.01 and abs(res.lon - 103.91) < 0.01, res
+          EOF2

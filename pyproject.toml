@@ -12,6 +12,7 @@ dependencies = [
     "pillow>=10.0",
     "numpy>=1.26",
     "requests>=2.31",
+    "rapidocr_onnxruntime>=1.2",
     "torch>=2.2",
     "transformers>=4.40",
 ]
