@@ -17,6 +17,9 @@ on:
 permissions:
   contents: write  # to publish the index as a release
 
+env:
+  PYTHONUNBUFFERED: "1"  # show progress in the log as it happens
+
 jobs:
   build:
     runs-on: ubuntu-latest

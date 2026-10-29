@@ -27,32 +27,57 @@ SAVE_MAX_SIDE = 512  # CLIP only sees 224 px, so keep files small
 CSV_FIELDS = ["id", "lat", "lon", "sequence", "captured_at", "path"]
 
 
+class RequestFailed(Exception):
+    pass
+
+
 class MapillaryClient:
-    def __init__(self, token: str, pause: float = 0.05):
+    def __init__(self, token: str, pause: float = 0.05, log=print):
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"OAuth {token}"
         self.pause = pause
+        self.log = log
+        self.skipped_tiles = 0
 
-    def _get(self, params: dict) -> list[dict]:
-        for attempt in range(6):
+    def _get(self, params: dict, attempts: int = 4) -> list[dict]:
+        last = ""
+        for attempt in range(attempts):
             try:
-                r = self.session.get(API_URL, params=params, timeout=60)
-            except requests.RequestException:
-                r = None
-            if r is not None and r.status_code == 200:
-                time.sleep(self.pause)
-                return r.json().get("data", [])
-            if r is not None and r.status_code in (400, 401, 403):
-                # Not retryable; don't echo the URL, it can contain the token in redirects.
-                raise RuntimeError(f"Mapillary API error {r.status_code}: {r.text[:300]}")
-            time.sleep(2**attempt)
-        raise RuntimeError("Mapillary API kept failing after retries")
+                r = self.session.get(API_URL, params=params, timeout=90)
+            except requests.RequestException as exc:
+                last = type(exc).__name__
+            else:
+                if r.status_code == 200:
+                    time.sleep(self.pause)
+                    return r.json().get("data", [])
+                last = f"HTTP {r.status_code}: {r.text[:200]}"
+                if r.status_code in (401, 403):
+                    raise RuntimeError(f"Mapillary rejected the token ({last})")
+                if r.status_code == 400:
+                    break  # bad request; retrying won't help, but a smaller bbox might
+                if r.status_code == 429:
+                    time.sleep(60)  # rate limited: back off hard
+                    continue
+            time.sleep(2 ** (attempt + 1))
+        raise RequestFailed(last)
 
     def search(self, bbox: tuple[float, float, float, float], depth: int = 0) -> list[dict]:
-        """Images in bbox (min_lon, min_lat, max_lon, max_lat), splitting tiles that hit the cap."""
+        """Images in bbox (min_lon, min_lat, max_lon, max_lat).
+
+        Tiles that hit the result cap, or that the API keeps failing on (dense areas can
+        time out), are split into quadrants. A tile that still fails at the smallest size
+        is skipped with a warning instead of aborting the whole run."""
         params = {"bbox": ",".join(f"{v:.6f}" for v in bbox), "fields": FIELDS, "limit": LIMIT}
-        data = self._get(params)
-        if len(data) < LIMIT or depth >= MAX_SPLIT_DEPTH:
+        try:
+            data = self._get(params)
+        except RequestFailed as exc:
+            if depth >= MAX_SPLIT_DEPTH:
+                self.skipped_tiles += 1
+                self.log(f"  warning: skipping tile {params['bbox']} ({exc})")
+                return []
+            self.log(f"  tile {params['bbox']} failed ({exc}); splitting")
+            data = None
+        if data is not None and (len(data) < LIMIT or depth >= MAX_SPLIT_DEPTH):
             return data
         x0, y0, x1, y1 = bbox
         xm, ym = (x0 + x1) / 2, (y0 + y1) / 2
@@ -134,7 +159,7 @@ def collect(
     img_dir = out_dir / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
 
-    client = MapillaryClient(token)
+    client = MapillaryClient(token, log=log)
     tiles = list(iter_tiles(boundary))
     log(f"Searching {len(tiles)} tiles")
     seen: dict[str, dict] = {}
@@ -143,8 +168,12 @@ def collect(
             rec = to_record(img)
             if rec and (boundary is None or boundary.contains(rec["lat"], rec["lon"])):
                 seen[rec["id"]] = rec
-        if i % 100 == 0:
+        if i % 50 == 0:
             log(f"  {i}/{len(tiles)} tiles, {len(seen)} candidate images")
+    if client.skipped_tiles:
+        log(f"warning: {client.skipped_tiles} small tiles were skipped after repeated API errors")
+    if not seen:
+        raise RuntimeError("Mapillary returned no usable images")
 
     chosen = select(list(seen.values()), subcell_deg, per_subcell)
     if max_images and len(chosen) > max_images:

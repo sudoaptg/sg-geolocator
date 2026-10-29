@@ -64,3 +64,21 @@ def test_evaluate_index_beats_baseline(tmp_path):
     assert result["retrieval"]["n"] > 0
     assert result["baseline_centre"]["median_km"] > 5
     assert "| retrieval |" in to_markdown(result)
+
+
+def test_search_splits_failing_tile_and_skips_smallest(monkeypatch):
+    from sg_geolocator import mapillary as m
+
+    client = m.MapillaryClient("tok", log=lambda *_: None)
+    calls = []
+
+    def fake_get(params, attempts=4):
+        calls.append(params["bbox"])
+        x0 = float(params["bbox"].split(",")[0])
+        if len(calls) == 1 or x0 == 103.8:  # whole tile fails, and its west-most chain keeps failing
+            raise m.RequestFailed("HTTP 500")
+        return [{"id": params["bbox"]}]
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    out = client.search((103.8, 1.3, 103.81, 1.31))
+    assert out and client.skipped_tiles > 0
