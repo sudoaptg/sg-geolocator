@@ -13,6 +13,10 @@ on:
       per_subcell:
         description: "Photos kept per grid square"
         default: "2"
+      refetch:
+        description: "Download fresh photos even if a cached set with these settings exists"
+        type: boolean
+        default: false
 
 permissions:
   contents: write  # to publish the index as a release
@@ -48,13 +52,36 @@ jobs:
           curl -fsSL "$url" -o sg_boundary.geojson
           python -c "from sg_geolocator.geo import Boundary as B; b=B.from_geojson('sg_boundary.geojson'); assert b.contains(1.3521, 103.8198); assert not b.contains(1.4927, 103.7414); print('boundary ok')"
 
+      # Downloaded photos are cached per settings, so a failure in a later step (or a
+      # re-run to tweak indexing/evaluation) doesn't repeat the ~45 min Mapillary search.
+      - name: Restore cached photos
+        id: photos
+        if: ${{ !inputs.refetch }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/mapillary
+          key: mapillary-${{ inputs.max_images }}-${{ inputs.subcell }}-${{ inputs.per_subcell }}-${{ github.run_id }}
+          restore-keys: mapillary-${{ inputs.max_images }}-${{ inputs.subcell }}-${{ inputs.per_subcell }}-
+
       - name: Fetch reference photos from Mapillary
+        if: steps.photos.outputs.cache-matched-key == ''
         env:
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
         run: |
           if [ -z "$MAPILLARY_TOKEN" ]; then echo "::error::Add the MAPILLARY_TOKEN repository secret first"; exit 1; fi
           sg-geolocate fetch-mapillary --out data/mapillary --boundary sg_boundary.geojson \
             --max-images ${{ inputs.max_images }} --subcell ${{ inputs.subcell }} --per-subcell ${{ inputs.per_subcell }}
+
+      - name: Save photos to cache
+        if: steps.photos.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v4
+        with:
+          path: data/mapillary
+          key: mapillary-${{ inputs.max_images }}-${{ inputs.subcell }}-${{ inputs.per_subcell }}-${{ github.run_id }}
+
+      - name: Show photo set
+        run: |
+          echo "Using $(($(wc -l < data/mapillary/metadata.csv) - 1)) photos (source: ${{ steps.photos.outputs.cache-matched-key || 'fresh download' }})"
 
       - name: Build index
         run: sg-geolocate build-index --metadata data/mapillary/metadata.csv --out index.npz
