@@ -51,6 +51,25 @@ jobs:
           save_index(["a.jpg", "b.jpg"], [(1.30, 103.80), (1.35, 103.90)], ["s1", "s2"], e, "i.npz")
           print("retrieval:", RetrievalIndex("i.npz").predict(img[0], k=2))
           EOF
+      - name: Cache gazetteers (OSM roads, bus stops, OneMap lookups)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sg_geolocator
+          key: sg-gazetteers-v1-${{ github.run_id }}
+          restore-keys: sg-gazetteers-v1-
+      - name: Road network loads and finds a known junction (Orchard Rd x Scotts Rd)
+        run: |
+          python - <<'EOF2'
+          from sg_geolocator.geo import haversine_km
+          from sg_geolocator.roads import Roads
+          r = Roads.load(log=print)
+          print(len(r.names), "named roads")
+          assert len(r.names) > 2000
+          assert r.match("SCOTS ROAD") == "SCOTTS ROAD"
+          js = r.junctions("ORCHARD ROAD", "SCOTTS ROAD")
+          print("junctions:", js)
+          assert any(haversine_km(lat, lon, 1.3048, 103.8318) < 0.5 for lat, lon in js), js
+          EOF2
       - name: Read a sign with OCR and resolve it with the live gazetteers
         run: |
           python - <<'EOF2'

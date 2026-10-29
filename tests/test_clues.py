@@ -1,4 +1,15 @@
+import pytest
+
 from sg_geolocator.clues import BusStops, ClueLocator, OneMap, combine, extract, Clue, normalize_street
+from sg_geolocator.roads import Roads
+
+
+@pytest.fixture(autouse=True)
+def no_road_download(monkeypatch):
+    """Tests never download the OSM road network; ones that need roads pass their own."""
+    def fail(cls, path=None, log=None):
+        raise OSError("no network in tests")
+    monkeypatch.setattr(Roads, "load", classmethod(fail))
 
 
 def _r(searchval, lat, lon, blk="", road="NIL", postal="NIL", address=None):
@@ -132,3 +143,50 @@ def test_evaluate_text_scores_placed_photos(tmp_path, monkeypatch):
     assert res["metrics"]["within_0.1km"] == 1.0
     assert res["by_kind"]["bus_stop"]["n"] == 20
     assert "Placed from text: 20" in text_to_markdown(res)
+
+
+# Two roads crossing at (1.3500, 103.9000), plus a parallel numbered avenue.
+ROADS = Roads({
+    "YIO CHU KANG ROAD": [[[1.3500, 103.8900], [1.3500, 103.8950], [1.3500, 103.9000], [1.3500, 103.9100]]],
+    "SELETAR ROAD": [[[1.3400, 103.9000], [1.3450, 103.9000], [1.3500, 103.9000], [1.3600, 103.9000]]],
+    "TAMPINES AVENUE 3": [[[1.3300, 103.9400], [1.3400, 103.9400]]],
+    "TAMPINES AVENUE 5": [[[1.3300, 103.9500], [1.3400, 103.9500]]],
+})
+
+
+def test_road_match_corrects_ocr_but_never_changes_numbers():
+    assert ROADS.match("YO CHU KANG ROAD") == "YIO CHU KANG ROAD"
+    assert ROADS.match("SELETAR ROAD") == "SELETAR ROAD"
+    assert ROADS.match("TAMPINES AVENUE 5") == "TAMPINES AVENUE 5"
+    assert ROADS.match("TAMPINES AVENUE 7") is None  # no such avenue; 3 and 5 must not match
+    assert ROADS.match("TOTALLY DIFFERENT ROAD") is None
+
+
+def test_junction_of_two_roads():
+    js = ROADS.junctions("YIO CHU KANG ROAD", "SELETAR ROAD")
+    assert len(js) == 1 and abs(js[0][0] - 1.35) < 1e-4 and abs(js[0][1] - 103.90) < 1e-4
+    assert ROADS.junctions("TAMPINES AVENUE 3", "TAMPINES AVENUE 5") == []  # parallel, ~1 km apart
+
+
+def test_two_road_names_on_a_sign_place_the_junction():
+    loc = ClueLocator(onemap=FakeOneMap({}), bus_stops=BUS, roads=ROADS)
+    res = loc.locate_text(["Yo Chu Kang Rd", "Seletar Rd"])
+    assert res.clues[0].kind == "junction"
+    assert abs(res.lat - 1.35) < 1e-4 and abs(res.lon - 103.90) < 1e-4
+    assert res.confidence > 0.9  # junction plus both street clues agree
+
+
+def test_single_misread_road_resolves_via_road_network():
+    loc = ClueLocator(onemap=FakeOneMap({}), bus_stops=BUS, roads=ROADS)
+    res = loc.locate_text(["Seletar Rd"], prior=(1.341, 103.95))
+    assert res.clues[0].kind == "street" and abs(res.lat - 1.34) < 1e-4  # point on the road nearest the prior
+
+
+def test_overpass_json_parsing():
+    data = {"elements": [
+        {"type": "way", "tags": {"name": "Delta Road", "highway": "tertiary"},
+         "geometry": [{"lat": 1.2901234, "lon": 103.8209876}, {"lat": 1.291, "lon": 103.822}]},
+        {"type": "way", "tags": {"highway": "service"}, "geometry": [{"lat": 1.3, "lon": 103.8}]},
+    ]}
+    r = Roads.from_overpass_json(data)
+    assert r.names == ["DELTA ROAD"] and r.roads["DELTA ROAD"][0][0] == [1.29012, 103.82099]

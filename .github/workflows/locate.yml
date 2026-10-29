@@ -38,6 +38,12 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: hf-${{ steps.index.outputs.model }}
+      - name: Cache gazetteers (OSM roads, bus stops, OneMap lookups)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sg_geolocator
+          key: sg-gazetteers-v1-${{ github.run_id }}
+          restore-keys: sg-gazetteers-v1-
       - name: Locate
         run: |
           shopt -s nullglob nocaseglob

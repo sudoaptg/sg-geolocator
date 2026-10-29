@@ -8,6 +8,8 @@ tens of metres. Text is read with RapidOCR (free, runs on CPU) and resolved with
 - the public bus stop list (code -> lng, lat, name, road), derived from LTA DataMall
 - the OneMap search API (Singapore Land Authority) for postal codes, addresses, roads and
   stations; works without a key, and uses ONEMAP_TOKEN from the environment if set
+- the OpenStreetMap road network (see roads.py) to correct misread road names and to
+  place a photo at the junction of two roads read in it
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ CONFIDENCE = {
     "bus_stop": 0.9,
     "block": 0.9,
     "station": 0.75,
+    "junction": 0.85,  # two road names read together, and those roads meet here
     "street": 0.5,  # roads can be kilometres long; we only get a point on them
 }
 
@@ -249,10 +252,19 @@ def _closest(cands: list[tuple[float, float, str]], prior: tuple[float, float] |
 
 
 class ClueLocator:
-    def __init__(self, reader: TextReader | None = None, onemap: OneMap | None = None, bus_stops: BusStops | None = None):
+    def __init__(
+        self,
+        reader: TextReader | None = None,
+        onemap: OneMap | None = None,
+        bus_stops: BusStops | None = None,
+        roads=None,
+    ):
+        """`roads`: a Roads instance, None to download/load it on first use, or False to
+        resolve street names with OneMap only."""
         self._reader = reader
         self.onemap = onemap or OneMap()
         self._bus = bus_stops
+        self._roads = roads
 
     @property
     def reader(self) -> TextReader:
@@ -268,6 +280,17 @@ class ClueLocator:
             except Exception:
                 self._bus = BusStops({})
         return self._bus
+
+    @property
+    def roads(self):
+        if self._roads is None:
+            from .roads import Roads
+
+            try:
+                self._roads = Roads.load()
+            except Exception:
+                self._roads = False  # offline: fall back to OneMap street lookups
+        return self._roads or None
 
     def locate(self, path: str | Path, prior: tuple[float, float] | None = None) -> ClueResult | None:
         return self.locate_text(self.reader.read(path), prior)
@@ -291,6 +314,11 @@ class ClueLocator:
                 clues.append(Clue("bus_stop", code, hit[0], hit[1], CONFIDENCE["bus_stop"], hit[2]))
 
         streets = found["street"]
+        roads = self.roads if streets else None
+        if roads:
+            # Correct OCR misreads against real road names, dropping text that isn't a road.
+            streets = list(dict.fromkeys(m for m in (roads.match(s) for s in streets) if m))
+
         for blk in found["block"]:
             for street in streets:
                 hits = _hits(self.onemap.search(f"{blk} {street}"),
@@ -308,12 +336,28 @@ class ClueLocator:
             if best:
                 clues.append(Clue("station", name, best[0], best[1], CONFIDENCE["station"], best[2]))
 
-        for street in streets:
-            hits = _hits(self.onemap.search(street), lambda r: r.get("ROAD_NAME", "").upper() == street,
-                         lambda r: r.get("ROAD_NAME", ""))
-            best = _closest(hits, prior)
-            if best:
-                clues.append(Clue("street", street, best[0], best[1], CONFIDENCE["street"], best[2]))
+        if roads:
+            junctions = []
+            for i, a in enumerate(streets):
+                for b in streets[i + 1 :]:
+                    best = _closest([(lat, lon, "") for lat, lon in roads.junctions(a, b)], prior)
+                    if best:
+                        junctions.append(Clue("junction", f"{a} x {b}", best[0], best[1], CONFIDENCE["junction"],
+                                              f"junction of {a} and {b}"))
+            clues.extend(junctions)
+            # A lone road name only says "somewhere on this road": pick the point nearest a
+            # junction we found, else nearest the visual guess.
+            anchor = (junctions[0].lat, junctions[0].lon) if junctions else prior
+            for street in streets:
+                lat, lon = roads.point_on(street, anchor)
+                clues.append(Clue("street", street, lat, lon, CONFIDENCE["street"], street))
+        else:
+            for street in streets:
+                hits = _hits(self.onemap.search(street), lambda r: r.get("ROAD_NAME", "").upper() == street,
+                             lambda r: r.get("ROAD_NAME", ""))
+                best = _closest(hits, prior)
+                if best:
+                    clues.append(Clue("street", street, best[0], best[1], CONFIDENCE["street"], best[2]))
 
         self.onemap.save()
         if not clues:

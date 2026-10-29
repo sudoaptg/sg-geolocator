@@ -14,7 +14,10 @@ The pipeline runs these stages and returns the most confident answer:
    can pin the photo to within tens of metres. Several clues that agree raise confidence; a
    stray misread number that disagrees with the rest is outvoted. Lookups use the public
    [OneMap](https://www.onemap.gov.sg/) search API (set `ONEMAP_TOKEN` to use a free account
-   token) and the bus stop list from [BusRouter SG](https://busrouter.sg/) (LTA DataMall data).
+   token), the bus stop list from [BusRouter SG](https://busrouter.sg/) (LTA DataMall data), and
+   the [OpenStreetMap](https://www.openstreetmap.org/copyright) road network (ODbL), which
+   corrects misread road names and, when a sign shows two roads, places the photo at the
+   junction where they meet.
 3. **Landmark recognition (zero-shot):** a CLIP model scores the image against text prompts for
    well-known Singapore landmarks (`src/sg_geolocator/data/landmarks.json`). A confident match
    gives a precise coordinate.

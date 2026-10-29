@@ -9,7 +9,7 @@ on:
         default: ""
   push:
     branches: [ocr-clues]
-    paths: [src/sg_geolocator/clues.py, .github/workflows/evaluate-text.yml]
+    paths: [src/sg_geolocator/clues.py, src/sg_geolocator/roads.py, .github/workflows/evaluate-text.yml]
 
 permissions:
   contents: read
@@ -37,6 +37,12 @@ jobs:
           key: mapillary-15000-0.002-2-none
           restore-keys: mapillary-15000-0.002-2-
           fail-on-cache-miss: true
+      - name: Cache gazetteers (OSM roads, bus stops, OneMap lookups)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sg_geolocator
+          key: sg-gazetteers-v1-${{ github.run_id }}
+          restore-keys: sg-gazetteers-v1-
       - name: Evaluate
         env:
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
