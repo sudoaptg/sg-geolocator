@@ -52,3 +52,47 @@ def _as_array(feats) -> np.ndarray:
 
 def _normalize(x: np.ndarray) -> np.ndarray:
     return x / np.linalg.norm(x, axis=-1, keepdims=True)
+
+
+# Visual place recognition: trained to give the *same spot* similar descriptors across
+# viewpoints, lighting and years, rather than describing what kind of scene it is.
+# EigenPlaces (Berton et al., ICCV 2023), loaded from its official torch.hub repo.
+EIGENPLACES = "eigenplaces/ResNet50/512"
+PLACE_SIZE = (512, 384)  # (width, height) fed to the place model
+
+
+class PlaceEmbedder:
+    def __init__(self, model_name: str = EIGENPLACES, device: str | None = None):
+        import torch
+
+        family, backbone, dim = model_name.split("/")
+        if family != "eigenplaces":
+            raise ValueError(f"Unknown place-recognition model: {model_name}")
+        self._torch = torch
+        self.model_name = model_name
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = torch.hub.load(
+            "gmberton/eigenplaces", "get_trained_model", backbone=backbone, fc_output_dim=int(dim), trust_repo=True
+        ).to(self.device).eval()
+        self._mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        self._std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+    def embed_images(self, paths: list[str | Path]) -> np.ndarray:
+        from PIL import Image
+
+        torch = self._torch
+        batch = np.stack([
+            np.asarray(Image.open(p).convert("RGB").resize(PLACE_SIZE, Image.BILINEAR), dtype=np.float32) / 255.0
+            for p in paths
+        ])
+        x = (torch.from_numpy(batch).permute(0, 3, 1, 2) - self._mean) / self._std
+        with torch.no_grad():
+            feats = self.model(x.to(self.device))
+        return _normalize(feats.cpu().numpy())
+
+
+def make_embedder(model_name: str = DEFAULT_MODEL):
+    """The embedder an index was built with, from the model id stored in it."""
+    if model_name.startswith("eigenplaces/"):
+        return PlaceEmbedder(model_name)
+    return ClipEmbedder(model_name)

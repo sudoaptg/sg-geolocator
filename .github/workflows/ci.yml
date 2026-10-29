@@ -26,7 +26,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -e .
       - uses: actions/cache@v4
         with:
@@ -51,6 +51,23 @@ jobs:
           save_index(["a.jpg", "b.jpg"], [(1.30, 103.80), (1.35, 103.90)], ["s1", "s2"], e, "i.npz")
           print("retrieval:", RetrievalIndex("i.npz").predict(img[0], k=2))
           EOF
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch
+          key: torch-hub-eigenplaces/ResNet50/512
+      - name: Place-recognition model loads and embeds
+        run: |
+          python - <<'EOF2'
+          import time
+          import numpy as np
+          from PIL import Image
+          from sg_geolocator.embedder import make_embedder
+          Image.new("RGB", (640, 480), (90, 140, 200)).save("p.jpg")
+          e = make_embedder("eigenplaces/ResNet50/512")
+          t = time.time(); f = e.embed_images(["p.jpg"] * 8); dt = (time.time() - t) / 8
+          print(f"descriptor {f.shape}, {dt:.2f} s/photo")
+          assert f.shape == (8, 512) and np.allclose(np.linalg.norm(f, axis=1), 1, atol=1e-3)
+          EOF2
       - name: Cache gazetteers (OSM roads, bus stops, OneMap lookups)
         uses: actions/cache@v4
         with:

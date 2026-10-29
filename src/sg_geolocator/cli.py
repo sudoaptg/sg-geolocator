@@ -18,6 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-exif", action="store_true", help="Ignore EXIF GPS (useful for evaluation)")
     p.add_argument("--no-text", action="store_true", help="Skip reading signs/text in the photo")
     p.add_argument("--geocell", help="Area classifier (.npz) from train-geocell")
+    p.add_argument("--places", help="Dense place-recognition index (.npz) for exact-spot matching")
 
     f = sub.add_parser("fetch-mapillary", help="Download reference photos from Mapillary")
     f.add_argument("--out", default="data/mapillary")
@@ -49,6 +50,18 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--test-fraction", type=float, default=0.1)
     e.add_argument("--json-out")
     e.add_argument("--md-out")
+    e.add_argument("--radius", type=float, default=1.0, help="Neighbour agreement radius in km (0.1 for dense indexes)")
+    e.add_argument("--max-test", type=int, help="Score at most N held-out photos")
+    e.add_argument("--no-geocell", action="store_true", help="Skip the area classifier (slow on large indexes)")
+
+    d = sub.add_parser("build-dense-shard", help="Search, download and embed one shard of a dense place index")
+    d.add_argument("--shard", required=True, help="i/n")
+    d.add_argument("--model", default=None, help="Default: EigenPlaces ResNet50-512 place recognition")
+    d.add_argument("--boundary", help="Singapore boundary GeoJSON")
+    d.add_argument("--subcell", type=float, default=None, help="Thinning grid in degrees (default ~17 m)")
+    d.add_argument("--per-subcell", type=int, default=None)
+    d.add_argument("--limit", type=int, help="Only the first N photos of the shard (timing tests)")
+    d.add_argument("--out", required=True)
 
     t = sub.add_parser("evaluate-text", help="Score the text-clue stage on held-out Mapillary photos")
     t.add_argument("metadata", help="metadata.csv from fetch-mapillary")
@@ -64,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         from .pipeline import Geolocator
 
         geo = Geolocator(index_path=args.index, use_exif=not args.no_exif, use_text=not args.no_text,
-                         geocell_path=args.geocell)
+                         geocell_path=args.geocell, places_path=args.places)
         for img in args.images:
             pred = geo.predict(img)
             print(json.dumps({"image": img, **(pred.as_dict() if pred else {"error": "no prediction"})}))
@@ -82,10 +95,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "build-index":
-        from .embedder import DEFAULT_MODEL, ClipEmbedder
+        from .embedder import DEFAULT_MODEL, make_embedder
         from .retrieval import build_index, build_index_from_csv
 
-        embedder = ClipEmbedder(args.model or DEFAULT_MODEL)
+        embedder = make_embedder(args.model or DEFAULT_MODEL)
         if args.metadata:
             shard = tuple(int(x) for x in args.shard.split("/")) if args.shard else None
             n = build_index_from_csv(args.metadata, embedder, args.out, shard=shard, limit=args.limit)
@@ -107,9 +120,27 @@ def main(argv: list[str] | None = None) -> int:
 
         data = np.load(args.index)
         model = str(data["model"]) if "model" in data else ""
-        clf = GeoCellClassifier(cell_deg=args.cell).fit(data["embeddings"], data["coords"], log=print)
+        clf = GeoCellClassifier(cell_deg=args.cell).fit(data["embeddings"].astype(np.float32), data["coords"], log=print)
         clf.save(args.out, model=model)
         print(f"Saved area classifier ({len(clf.centroids)} cells) -> {args.out}")
+        return 0
+
+    if args.cmd == "build-dense-shard":
+        from .dense import DENSE_PER_SUBCELL, DENSE_SUBCELL_DEG, build_dense_shard
+        from .embedder import EIGENPLACES, make_embedder
+        from .geo import Boundary
+
+        token = os.environ.get("MAPILLARY_TOKEN")
+        if not token:
+            parser.error("set the MAPILLARY_TOKEN environment variable")
+        i, n = (int(x) for x in args.shard.split("/"))
+        n_done = build_dense_shard(
+            token, make_embedder(args.model or EIGENPLACES), args.out, i, n,
+            boundary=Boundary.from_geojson(args.boundary) if args.boundary else None,
+            subcell_deg=args.subcell or DENSE_SUBCELL_DEG, per_subcell=args.per_subcell or DENSE_PER_SUBCELL,
+            limit=args.limit,
+        )
+        print(f"Shard {i}/{n}: {n_done} photos -> {args.out}")
         return 0
 
     if args.cmd == "evaluate-text":
@@ -123,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         from .evaluate import evaluate_index, to_markdown
 
-        result = evaluate_index(args.index, args.test_fraction, log=print)
+        result = evaluate_index(args.index, args.test_fraction, geocell=not args.no_geocell, log=print,
+                                radius_km=args.radius, max_test=args.max_test)
         md = to_markdown(result)
     print(md)
     if args.json_out:

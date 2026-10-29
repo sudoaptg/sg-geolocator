@@ -130,6 +130,25 @@ def select(records: list[dict], subcell_deg: float, per_subcell: int) -> list[di
     return [r for bucket in buckets.values() for r in bucket]
 
 
+def search_tiles(token: str, tiles: list, boundary: Boundary | None = None, log=print) -> dict[str, dict]:
+    """All usable (non-panorama, on-land) images in `tiles`, keyed by image id."""
+    client = MapillaryClient(token, log=log)
+    log(f"Searching {len(tiles)} tiles")
+    seen: dict[str, dict] = {}
+    for i, tile in enumerate(tiles, 1):
+        for img in client.search(tile):
+            rec = to_record(img)
+            if rec and (boundary is None or boundary.contains(rec["lat"], rec["lon"])):
+                seen[rec["id"]] = rec
+        if i % 50 == 0:
+            log(f"  {i}/{len(tiles)} tiles, {len(seen)} candidate images")
+    if client.skipped_tiles:
+        log(f"warning: {client.skipped_tiles} small tiles were skipped after repeated API errors")
+    if not seen:
+        raise RuntimeError("Mapillary returned no usable images")
+    return seen
+
+
 def _download(session: requests.Session, rec: dict, out_dir: Path) -> dict | None:
     path = out_dir / f"{rec['id']}.jpg"
     if not path.exists():
@@ -159,22 +178,7 @@ def collect(
     img_dir = out_dir / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
 
-    client = MapillaryClient(token, log=log)
-    tiles = list(iter_tiles(boundary))
-    log(f"Searching {len(tiles)} tiles")
-    seen: dict[str, dict] = {}
-    for i, tile in enumerate(tiles, 1):
-        for img in client.search(tile):
-            rec = to_record(img)
-            if rec and (boundary is None or boundary.contains(rec["lat"], rec["lon"])):
-                seen[rec["id"]] = rec
-        if i % 50 == 0:
-            log(f"  {i}/{len(tiles)} tiles, {len(seen)} candidate images")
-    if client.skipped_tiles:
-        log(f"warning: {client.skipped_tiles} small tiles were skipped after repeated API errors")
-    if not seen:
-        raise RuntimeError("Mapillary returned no usable images")
-
+    seen = search_tiles(token, list(iter_tiles(boundary)), boundary, log)
     chosen = select(list(seen.values()), subcell_deg, per_subcell)
     if max_images and len(chosen) > max_images:
         step = len(chosen) / max_images

@@ -108,7 +108,7 @@ class RetrievalIndex:
             embeddings, coords = data["embeddings"], data["coords"]
             # Indexes built before the model was recorded used the default model.
             self.model = str(data["model"]) if "model" in data else DEFAULT_MODEL
-        self.embeddings = np.asarray(embeddings)
+        self.embeddings = np.asarray(embeddings, dtype=np.float32)  # dense indexes are stored as float16
         self.coords = np.asarray(coords)
 
     def predict(

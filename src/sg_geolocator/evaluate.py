@@ -15,7 +15,7 @@ from .geo import haversine_km
 from .geocell import GeoCellClassifier
 from .retrieval import RetrievalIndex
 
-THRESHOLDS_KM = (0.5, 1, 5, 10)
+THRESHOLDS_KM = (0.05, 0.1, 0.5, 1, 5, 10)
 
 # (name, k, aggregation) for the retrieval variants compared on every evaluation.
 KNN_VARIANTS = [
@@ -51,32 +51,58 @@ def _errors(pred: np.ndarray, truth: np.ndarray) -> np.ndarray:
     return np.array([haversine_km(a, b, c, d) for (a, b), (c, d) in zip(pred, truth)])
 
 
-def evaluate_index(index_path: str, test_fraction: float = 0.1, geocell: bool = True, log=None) -> dict:
+def evaluate_index(
+    index_path: str,
+    test_fraction: float = 0.1,
+    geocell: bool = True,
+    log=None,
+    radius_km: float = 1.0,
+    max_test: int | None = None,
+    confident: float = 0.5,
+) -> dict:
+    """Score every locating method on held-out sequences of an index.
+
+    `radius_km` is how close neighbours must be to count as agreeing (1 km suits sparse
+    CLIP galleries; ~0.1 km suits dense place-recognition ones). For the cluster methods
+    an extra row reports only the queries answered with confidence >= `confident`: how
+    often the method is sure, and how right it is then."""
     data = np.load(index_path)
-    emb, coords, seqs = data["embeddings"], data["coords"], data["sequences"]
+    emb, coords, seqs = data["embeddings"].astype(np.float32), data["coords"], data["sequences"]
     test = split(seqs, test_fraction)
     if test.sum() == 0 or (~test).sum() == 0:
         raise ValueError("Not enough photos to split into gallery and test sets")
+    test_idx = np.flatnonzero(test)
+    if max_test and len(test_idx) > max_test:
+        test_idx = np.sort(np.random.default_rng(0).choice(test_idx, max_test, replace=False))
 
     gallery = RetrievalIndex(embeddings=emb[~test], coords=coords[~test])
-    truth = coords[test]
+    truth = coords[test_idx]
     methods: dict[str, dict] = {}
 
     centre = coords[~test].mean(axis=0)  # baseline: always guess the gallery's centre
     methods["baseline_centre"] = metrics(_errors(np.tile(centre, (len(truth), 1)), truth))
 
     for name, k, how in KNN_VARIANTS:
-        preds = [gallery.predict(e, k=k, method=how) for e in emb[test]]
-        methods[name] = metrics(_errors(np.array([[p.lat, p.lon] for p in preds]), truth))
+        preds = [gallery.predict(emb[i], k=k, method=how, radius_km=radius_km) for i in test_idx]
+        errs = _errors(np.array([[p.lat, p.lon] for p in preds]), truth)
+        methods[name] = metrics(errs)
+        if how == "cluster":
+            sure = np.array([p.confidence >= confident for p in preds])
+            if sure.any():
+                methods[f"{name} (conf>={confident})"] = metrics(errs[sure]) | {"coverage": float(sure.mean())}
+        if log:
+            log(f"  {name}: median {methods[name]['median_km']:.2f} km")
 
     if geocell:
         for size in GEOCELL_SIZES_DEG:
             clf = GeoCellClassifier(cell_deg=size).fit(emb[~test], coords[~test], log=log)
-            pred, _ = clf.predict(emb[test])
+            pred, _ = clf.predict(emb[test_idx])
             methods[f"geocell_{size}deg"] = metrics(_errors(pred, truth))
 
-    best = min((m for m in methods if m != "baseline_centre"), key=lambda m: methods[m]["median_km"])
-    return {"gallery_size": int((~test).sum()), "methods": methods, "best": best}
+    candidates = [m for m in methods if m != "baseline_centre" and "conf>=" not in m]
+    best = min(candidates, key=lambda m: methods[m]["median_km"])
+    return {"gallery_size": int((~test).sum()), "methods": methods, "best": best,
+            "model": str(data["model"]) if "model" in data else ""}
 
 
 def to_markdown(result: dict) -> str:
@@ -90,7 +116,8 @@ def to_markdown(result: dict) -> str:
         "|---" * (len(cols) + 1) + "|",
     ]
     for name, m in result["methods"].items():
-        cells = [str(m["n"]), f"{m['median_km']:.2f}", f"{m['mean_km']:.2f}"]
+        n = f"{m['n']} ({m['coverage']:.0%} of queries)" if "coverage" in m else str(m["n"])
+        cells = [n, f"{m['median_km']:.2f}", f"{m['mean_km']:.2f}"]
         cells += [f"{m[f'within_{t}km']:.1%}" for t in THRESHOLDS_KM]
         label = f"**{name}**" if name == result["best"] else name
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
@@ -99,6 +126,7 @@ def to_markdown(result: dict) -> str:
         "`baseline_centre` always guesses the middle of the gallery; every method must beat it.",
         "`knnK_mean` averages the K most similar photos; `knnK_cluster` keeps only the densest",
         "agreeing group of them; `geocell_*` is a linear classifier over grid cells of that size.",
+        "Rows marked `conf>=` only count the queries the method was confident about.",
     ]
     return "\n".join(lines) + "\n"
 

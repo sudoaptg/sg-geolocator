@@ -106,7 +106,7 @@ jobs:
           cache: pip
       - name: Install (CPU-only torch)
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -e .
       - uses: actions/cache/restore@v4
         with:

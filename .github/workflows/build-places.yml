@@ -1,0 +1,118 @@
+name: Build place index (exact-spot matching)
+
+# Dense visual place recognition index: hundreds of thousands of Mapillary photos, every
+# ~17 m, embedded with EigenPlaces. Each shard searches, downloads, embeds and deletes its
+# own share of the map, so only descriptors are kept. Needs the MAPILLARY_TOKEN secret.
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: "Parallel jobs (20 is the concurrency limit)"
+        default: "20"
+      limit:
+        description: "Only embed the first N photos per shard (empty = all; for timing tests)"
+        default: ""
+      subcell:
+        description: "Thinning grid in degrees (0.00015 is about 17 m)"
+        default: "0.00015"
+      per_subcell:
+        description: "Photos kept per grid square, from different capture sessions"
+        default: "2"
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+  MODEL: eigenplaces/ResNet50/512
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.s.outputs.list }}
+    steps:
+      - id: s
+        run: python3 -c "print('list=' + str(list(range(int('${{ inputs.shards }}')))))" >> "$GITHUB_OUTPUT"
+
+  shard:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (CPU-only torch)
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch
+          key: torch-hub-${{ env.MODEL }}
+      - name: Download Singapore boundary
+        run: |
+          url=$(curl -fsSL https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
+                | python -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])")
+          curl -fsSL "$url" -o sg_boundary.geojson
+      - name: Build shard ${{ matrix.shard }} of ${{ inputs.shards }}
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+        run: |
+          start=$(date +%s)
+          sg-geolocate build-dense-shard --shard ${{ matrix.shard }}/${{ inputs.shards }} --model "$MODEL" \
+            --boundary sg_boundary.geojson --subcell ${{ inputs.subcell }} --per-subcell ${{ inputs.per_subcell }} \
+            ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }} --out part-${{ matrix.shard }}.npz
+          n=$(python -c "import numpy as np; print(len(np.load('part-${{ matrix.shard }}.npz')['coords']))")
+          echo "::notice::shard ${{ matrix.shard }}: $n photos in $(( $(date +%s) - start ))s ($(nproc) CPUs)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: places-part-${{ matrix.shard }}
+          path: part-${{ matrix.shard }}.npz
+          retention-days: 3
+
+  finalize:
+    needs: shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: places-part-*
+          merge-multiple: true
+      - name: Merge shards
+        run: sg-geolocate merge-index part-*.npz --out places.npz && ls -lh places.npz
+      - name: Evaluate (held-out capture sessions, 100 m agreement radius)
+        run: |
+          sg-geolocate evaluate places.npz --radius 0.1 --max-test 3000 --no-geocell --json-out eval.json --md-out eval.md
+          { echo "Model: \`$MODEL\` (exact-spot matching)"; echo; cat eval.md; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish release
+        if: ${{ inputs.limit == '' }}  # timing tests don't publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="places-eigenplaces-$(date -u +%Y%m%d-%H%M)"
+          {
+            echo "Dense place-recognition index (\`$MODEL\`) for exact-spot matching. Use with"
+            echo "\`sg-geolocate predict photo.jpg --index index.npz --geocell geocell.npz --places places.npz\`."
+            echo
+            cat eval.md
+            echo
+            echo "Settings: subcell=${{ inputs.subcell }}, per_subcell=${{ inputs.per_subcell }}"
+            echo
+            echo "Reference imagery © Mapillary contributors, CC BY-SA 4.0. Only descriptors and image IDs are published."
+          } > notes.md
+          gh release create "$tag" places.npz eval.json --title "$tag" --notes-file notes.md

@@ -18,10 +18,17 @@ The pipeline runs these stages and returns the most confident answer:
    the [OpenStreetMap](https://www.openstreetmap.org/copyright) road network (ODbL), which
    corrects misread road names and, when a sign shows two roads, places the photo at the
    junction where they meet.
-3. **Landmark recognition (zero-shot):** a CLIP model scores the image against text prompts for
+3. **Exact-spot matching (place recognition):** a dense index of Mapillary photos every ~17 m,
+   embedded with [EigenPlaces](https://github.com/gmberton/EigenPlaces), a model trained to
+   recognise the *same place* across viewpoints and years. When the top matches agree on
+   one spot (within 100 m), that spot is the answer: typically tens of metres off. Built by
+   the **Build place index** workflow (20 parallel jobs; only descriptors are kept).
+4. **Landmark recognition (zero-shot):** a CLIP model scores the image against text prompts for
    well-known Singapore landmarks (`src/sg_geolocator/data/landmarks.json`). A confident match
    gives a precise coordinate.
-4. **Visual retrieval:** the image is embedded with CLIP and compared against a gallery of
+5. **Area guess:** StreetCLIP plus a trained area classifier for photos with no readable
+   text and no close match (median ~6 km).
+6. **Visual retrieval:** the image is embedded with CLIP and compared against a gallery of
    geotagged reference photos you build yourself. The location is a similarity-weighted average of
    the top-k neighbours' coordinates. This handles ordinary streets, HDB estates, parks and so on,
    which have no famous landmark.

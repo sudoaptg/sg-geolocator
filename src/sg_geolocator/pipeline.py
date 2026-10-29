@@ -8,6 +8,8 @@ from .exif import read_gps
 from .geo import Prediction, in_singapore, nearest_landmark
 
 LANDMARK_THRESHOLD = 0.5
+PLACE_THRESHOLD = 0.5  # share of the top matches that agree on one spot (within PLACE_RADIUS_KM)
+PLACE_RADIUS_KM = 0.1
 CLUE_THRESHOLD = 0.5  # even a road name alone usually beats the km-scale visual guess
 
 
@@ -18,21 +20,25 @@ class Geolocator:
         use_exif: bool = True,
         use_text: bool = True,
         geocell_path: str | Path | None = None,
+        places_path: str | Path | None = None,
     ):
         self.index_path = index_path
         self.geocell_path = geocell_path
+        self.places_path = places_path
         self.use_exif = use_exif
         self.use_text = use_text
         self._embedder = None
         self._landmarks = None
         self._index = None
         self._geocell = None
+        self._places = None
+        self._place_embedder = None
         self._clues = None
 
     def _load_models(self) -> None:
         if self._embedder is not None:
             return
-        from .embedder import DEFAULT_MODEL, ClipEmbedder
+        from .embedder import DEFAULT_MODEL, make_embedder
         from .geocell import GeoCellClassifier
         from .landmarks import LandmarkRecognizer
         from .retrieval import RetrievalIndex
@@ -45,21 +51,30 @@ class Geolocator:
             self._geocell = GeoCellClassifier.load(self.geocell_path)
             if self._geocell.model and self._geocell.model != model:
                 raise ValueError(f"geocell was trained on {self._geocell.model} embeddings, index uses {model}")
-        self._embedder = ClipEmbedder(model)
+        self._embedder = make_embedder(model)
         self._landmarks = LandmarkRecognizer(self._embedder)
+        if self.places_path:
+            self._places = RetrievalIndex(self.places_path)
+            self._place_embedder = make_embedder(self._places.model)
         if self.use_text:
             from .clues import ClueLocator
 
             self._clues = ClueLocator()
 
     def visual(self, path: str | Path) -> Prediction | None:
-        """Best guess from how the scene looks: a known landmark, else the area classifier,
-        else similar reference photos."""
+        """Best guess from how the scene looks: a known landmark, else an exact-spot match
+        against the dense place index, else the area classifier, else similar photos."""
         self._load_models()
         emb = self._embedder.embed_images([path])[0]
         landmark = self._landmarks.predict(emb)
         if landmark and landmark.confidence >= LANDMARK_THRESHOLD:
             return landmark
+        if self._places is not None:
+            place_emb = self._place_embedder.embed_images([path])[0]
+            match = self._places.predict(place_emb, k=10, method="cluster", radius_km=PLACE_RADIUS_KM)
+            if match.confidence >= PLACE_THRESHOLD:
+                match.source = "place-match"
+                return match
         if self._geocell is not None:
             (lat, lon), conf = (x[0] for x in self._geocell.predict(emb[None, :]))
             label, _ = nearest_landmark(lat, lon)
