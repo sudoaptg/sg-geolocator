@@ -24,20 +24,27 @@ jobs:
       - run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e .
+      - name: Download latest reference index (and area classifier, if the release has one)
+        id: index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          gh release download "$tag" --pattern index.npz
+          gh release download "$tag" --pattern geocell.npz || echo "no area classifier in $tag"
+          python -c "import numpy as np; d=np.load('index.npz'); print('model=' + (str(d['model']) if 'model' in d else 'openai/clip-vit-base-patch32'))" >> "$GITHUB_OUTPUT"
+          echo "Using $tag"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-clip-vit-base-patch32
-      - name: Download latest reference index
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download --pattern index.npz
+          key: hf-${{ steps.index.outputs.model }}
       - name: Locate
         run: |
           shopt -s nullglob nocaseglob
           files=(photos/*.jpg photos/*.jpeg photos/*.png photos/*.webp)
           if [ ${#files[@]} -eq 0 ]; then echo "No photos in photos/"; exit 0; fi
-          sg-geolocate predict "${files[@]}" --index index.npz --no-exif > results.jsonl
+          geocell=""; [ -f geocell.npz ] && geocell="--geocell geocell.npz"
+          sg-geolocate predict "${files[@]}" --index index.npz $geocell --no-exif > results.jsonl
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           from sg_geolocator.exif import read_gps
@@ -56,8 +63,8 @@ jobs:
               truth = f"off by **{haversine_km(r['lat'], r['lon'], *gps):.2f} km**" if gps else "no GPS in file"
               print(f"| {r['image']} | {where} | {r['source']} | {r['confidence']:.0%} | {ev} | {truth} |")
           print("\nGuesses ignore any GPS stored in the photo; it is only used to show the error. "
-                "`text` = read from signs (most precise), `landmark` / `retrieval` = from how the "
-                "scene looks (km-level).")
+                "`text` = read from signs (most precise); `landmark`, `geocell` and `retrieval` = from "
+                "how the scene looks (km-level).")
           PY
           cat results.jsonl
       - uses: actions/upload-artifact@v4

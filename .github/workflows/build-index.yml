@@ -1,9 +1,21 @@
 name: Build reference index
 
 # Run from the Actions tab ("Run workflow"). Needs the MAPILLARY_TOKEN repository secret.
+# Photos are cached per sampling settings, so later runs (e.g. with another model) skip the
+# ~45 min Mapillary search. Embedding is split across `shards` parallel jobs, which slow
+# models like StreetCLIP need to stay under the 6 h job limit.
 on:
   workflow_dispatch:
     inputs:
+      model:
+        description: "CLIP model (openai/clip-vit-base-patch32 is fast; geolocal/StreetCLIP is ~40x slower but trained for geolocation)"
+        default: "openai/clip-vit-base-patch32"
+      shards:
+        description: "Parallel embedding jobs (1 for base CLIP, ~20 for StreetCLIP)"
+        default: "1"
+      limit:
+        description: "Only embed the first N photos (empty = all; for timing tests)"
+        default: ""
       max_images:
         description: "Maximum reference photos to download"
         default: "15000"
@@ -23,45 +35,41 @@ permissions:
 
 env:
   PYTHONUNBUFFERED: "1"  # show progress in the log as it happens
+  PHOTOS_KEY: mapillary-${{ inputs.max_images }}-${{ inputs.subcell }}-${{ inputs.per_subcell }}
 
 jobs:
-  build:
+  photos:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 120
+    outputs:
+      shards: ${{ steps.shards.outputs.list }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
 
-      - name: Install (CPU-only torch)
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e .
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-clip-vit-base-patch32
-
-      - name: Download Singapore boundary (geoBoundaries ADM0)
-        run: |
-          url=$(curl -fsSL https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
-                | python -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])")
-          curl -fsSL "$url" -o sg_boundary.geojson
-          python -c "from sg_geolocator.geo import Boundary as B; b=B.from_geojson('sg_boundary.geojson'); assert b.contains(1.3521, 103.8198); assert not b.contains(1.4927, 103.7414); print('boundary ok')"
-
-      # Downloaded photos are cached per settings, so a failure in a later step (or a
-      # re-run to tweak indexing/evaluation) doesn't repeat the ~45 min Mapillary search.
       - name: Restore cached photos
         id: photos
         if: ${{ !inputs.refetch }}
         uses: actions/cache/restore@v4
         with:
           path: data/mapillary
-          key: mapillary-${{ inputs.max_images }}-${{ inputs.subcell }}-${{ inputs.per_subcell }}-${{ github.run_id }}
-          restore-keys: mapillary-${{ inputs.max_images }}-${{ inputs.subcell }}-${{ inputs.per_subcell }}-
+          key: ${{ env.PHOTOS_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ env.PHOTOS_KEY }}-
+          lookup-only: true  # the embed jobs restore it; here we only need to know it exists
+
+      - name: Download Singapore boundary (geoBoundaries ADM0)
+        if: steps.photos.outputs.cache-matched-key == ''
+        run: |
+          url=$(curl -fsSL https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
+                | python -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])")
+          curl -fsSL "$url" -o sg_boundary.geojson
+          python -c "from sg_geolocator.geo import Boundary as B; b=B.from_geojson('sg_boundary.geojson'); assert b.contains(1.3521, 103.8198); assert not b.contains(1.4927, 103.7414); print('boundary ok')"
 
       - name: Fetch reference photos from Mapillary
         if: steps.photos.outputs.cache-matched-key == ''
@@ -77,31 +85,96 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: data/mapillary
-          key: mapillary-${{ inputs.max_images }}-${{ inputs.subcell }}-${{ inputs.per_subcell }}-${{ github.run_id }}
+          key: ${{ env.PHOTOS_KEY }}-${{ github.run_id }}
 
-      - name: Show photo set
+      - id: shards
+        run: python -c "print('list=' + str(list(range(int('${{ inputs.shards }}')))))" >> "$GITHUB_OUTPUT"
+
+  embed:
+    needs: photos
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.photos.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (CPU-only torch)
         run: |
-          echo "Using $(($(wc -l < data/mapillary/metadata.csv) - 1)) photos (source: ${{ steps.photos.outputs.cache-matched-key || 'fresh download' }})"
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/mapillary
+          key: ${{ env.PHOTOS_KEY }}-none
+          restore-keys: ${{ env.PHOTOS_KEY }}-
+          fail-on-cache-miss: true
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ inputs.model }}
+      - name: Embed shard ${{ matrix.shard }} of ${{ inputs.shards }}
+        run: |
+          start=$(date +%s)
+          sg-geolocate build-index --metadata data/mapillary/metadata.csv --model "${{ inputs.model }}" \
+            --shard ${{ matrix.shard }}/${{ inputs.shards }} ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }} \
+            --out part-${{ matrix.shard }}.npz
+          n=$(python -c "import numpy as np; print(len(np.load('part-${{ matrix.shard }}.npz')['coords']))")
+          echo "::notice::shard ${{ matrix.shard }}: $n photos in $(( $(date +%s) - start ))s ($(nproc) CPUs)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: part-${{ matrix.shard }}
+          path: part-${{ matrix.shard }}.npz
+          retention-days: 3
 
-      - name: Build index
-        run: sg-geolocate build-index --metadata data/mapillary/metadata.csv --out index.npz
-
+  finalize:
+    needs: embed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: part-*
+          merge-multiple: true
+      - name: Merge shards and train the area classifier
+        run: |
+          sg-geolocate merge-index part-*.npz --out index.npz
+          sg-geolocate train-geocell index.npz --out geocell.npz
       - name: Evaluate
         run: |
           sg-geolocate evaluate index.npz --json-out eval.json --md-out eval.md
-          cat eval.md >> "$GITHUB_STEP_SUMMARY"
-
+          { echo "Model: \`${{ inputs.model }}\`"; echo; cat eval.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/mapillary
+          key: ${{ env.PHOTOS_KEY }}-none
+          restore-keys: ${{ env.PHOTOS_KEY }}-
       - name: Publish release
+        if: ${{ inputs.limit == '' }}  # timing tests don't publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="index-$(date -u +%Y%m%d-%H%M)"
+          slug=$(basename "${{ inputs.model }}" | tr '[:upper:]' '[:lower:]')
+          tag="index-$slug-$(date -u +%Y%m%d-%H%M)"
           cp data/mapillary/metadata.csv metadata.csv
           {
+            echo "Model: \`${{ inputs.model }}\`"
+            echo
             cat eval.md
             echo
             echo "Settings: max_images=${{ inputs.max_images }}, subcell=${{ inputs.subcell }}, per_subcell=${{ inputs.per_subcell }}"
             echo
             echo "Reference imagery © Mapillary contributors, CC BY-SA 4.0. Boundary: geoBoundaries."
           } > notes.md
-          gh release create "$tag" index.npz metadata.csv eval.json --title "$tag" --notes-file notes.md
+          gh release create "$tag" index.npz geocell.npz metadata.csv eval.json --title "$tag" --notes-file notes.md

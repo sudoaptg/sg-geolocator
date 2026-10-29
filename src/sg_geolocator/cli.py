@@ -17,6 +17,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--index", help="Retrieval index (.npz) from build-index")
     p.add_argument("--no-exif", action="store_true", help="Ignore EXIF GPS (useful for evaluation)")
     p.add_argument("--no-text", action="store_true", help="Skip reading signs/text in the photo")
+    p.add_argument("--geocell", help="Area classifier (.npz) from train-geocell")
 
     f = sub.add_parser("fetch-mapillary", help="Download reference photos from Mapillary")
     f.add_argument("--out", default="data/mapillary")
@@ -30,6 +31,18 @@ def main(argv: list[str] | None = None) -> int:
     src.add_argument("folder", nargs="?", help="Folder of photos with GPS in EXIF")
     src.add_argument("--metadata", help="metadata.csv from fetch-mapillary")
     b.add_argument("--out", default="index.npz")
+    b.add_argument("--model", default=None, help="Hugging Face CLIP model id (default: CLIP ViT-B/32; e.g. geolocal/StreetCLIP)")
+    b.add_argument("--shard", help="i/n: embed only the i-th of n slices (with --metadata), for parallel jobs")
+    b.add_argument("--limit", type=int, help="Only the first N photos of the metadata (for quick tests)")
+
+    mg = sub.add_parser("merge-index", help="Join shard indexes from build-index --shard")
+    mg.add_argument("parts", nargs="+")
+    mg.add_argument("--out", default="index.npz")
+
+    g = sub.add_parser("train-geocell", help="Train the area classifier on all photos of an index")
+    g.add_argument("index")
+    g.add_argument("--cell", type=float, default=0.01, help="Cell size in degrees (0.01 is about 1.1 km)")
+    g.add_argument("--out", default="geocell.npz")
 
     e = sub.add_parser("evaluate", help="Score retrieval on held-out photos of an index")
     e.add_argument("index")
@@ -50,7 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "predict":
         from .pipeline import Geolocator
 
-        geo = Geolocator(index_path=args.index, use_exif=not args.no_exif, use_text=not args.no_text)
+        geo = Geolocator(index_path=args.index, use_exif=not args.no_exif, use_text=not args.no_text,
+                         geocell_path=args.geocell)
         for img in args.images:
             pred = geo.predict(img)
             print(json.dumps({"image": img, **(pred.as_dict() if pred else {"error": "no prediction"})}))
@@ -68,14 +82,34 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "build-index":
-        from .embedder import ClipEmbedder
+        from .embedder import DEFAULT_MODEL, ClipEmbedder
         from .retrieval import build_index, build_index_from_csv
 
+        embedder = ClipEmbedder(args.model or DEFAULT_MODEL)
         if args.metadata:
-            n = build_index_from_csv(args.metadata, ClipEmbedder(), args.out)
+            shard = tuple(int(x) for x in args.shard.split("/")) if args.shard else None
+            n = build_index_from_csv(args.metadata, embedder, args.out, shard=shard, limit=args.limit)
         else:
-            n = build_index(args.folder, ClipEmbedder(), args.out)
-        print(f"Indexed {n} photos -> {args.out}")
+            n = build_index(args.folder, embedder, args.out)
+        print(f"Indexed {n} photos with {embedder.model_name} -> {args.out}")
+        return 0
+
+    if args.cmd == "merge-index":
+        from .retrieval import merge_indexes
+
+        print(f"Merged {merge_indexes(args.parts, args.out)} photos -> {args.out}")
+        return 0
+
+    if args.cmd == "train-geocell":
+        import numpy as np
+
+        from .geocell import GeoCellClassifier
+
+        data = np.load(args.index)
+        model = str(data["model"]) if "model" in data else ""
+        clf = GeoCellClassifier(cell_deg=args.cell).fit(data["embeddings"], data["coords"], log=print)
+        clf.save(args.out, model=model)
+        print(f"Saved area classifier ({len(clf.centroids)} cells) -> {args.out}")
         return 0
 
     if args.cmd == "evaluate-text":

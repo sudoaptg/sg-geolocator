@@ -56,6 +56,18 @@ class GeoCellClassifier:
         self.W, self.b = W, b
         return self
 
+    def save(self, path, model: str = "") -> None:
+        np.savez(path, W=self.W, b=self.b, mu=self.mu, sd=self.sd, centroids=self.centroids,
+                 cell_deg=np.asarray(self.cell_deg), model=np.asarray(model))
+
+    @classmethod
+    def load(cls, path) -> "GeoCellClassifier":
+        d = np.load(path)
+        clf = cls(cell_deg=float(d["cell_deg"]))
+        clf.W, clf.b, clf.mu, clf.sd, clf.centroids = d["W"], d["b"], d["mu"], d["sd"], d["centroids"]
+        clf.model = str(d["model"])
+        return clf
+
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         Xs = ((np.atleast_2d(X) - self.mu) / self.sd).astype(np.float32)
         return _softmax(Xs @ self.W + self.b)

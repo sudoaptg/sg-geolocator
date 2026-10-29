@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 
 DEFAULT_MODEL = "openai/clip-vit-base-patch32"
+# CLIP ViT-L/14-336 fine-tuned for image geolocation (Haas et al., 2023). Much slower on CPU.
+STREETCLIP = "geolocal/StreetCLIP"
 
 
 class ClipEmbedder:
@@ -15,6 +17,7 @@ class ClipEmbedder:
         from transformers import CLIPModel, CLIPProcessor
 
         self._torch = torch
+        self.model_name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = CLIPModel.from_pretrained(model_name).to(self.device).eval()
         self.processor = CLIPProcessor.from_pretrained(model_name)

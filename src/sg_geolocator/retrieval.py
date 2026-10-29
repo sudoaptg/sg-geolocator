@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .embedder import ClipEmbedder
+from .embedder import DEFAULT_MODEL, ClipEmbedder
 from .exif import read_gps
 from .geo import Prediction, in_singapore, nearest_landmark
 
@@ -32,21 +32,36 @@ def build_index(
 
 
 def build_index_from_csv(
-    csv_path: str | Path, embedder: ClipEmbedder, out: str | Path, batch_size: int = 32, log=print
+    csv_path: str | Path,
+    embedder: ClipEmbedder,
+    out: str | Path,
+    batch_size: int = 32,
+    log=print,
+    shard: tuple[int, int] | None = None,
+    limit: int | None = None,
 ) -> int:
-    """Embed photos listed in a metadata.csv (columns: path, lat, lon, sequence)."""
+    """Embed photos listed in a metadata.csv (columns: path, lat, lon, sequence).
+
+    `shard=(i, n)` embeds only the i-th of n contiguous slices, so a slow model can be
+    spread over parallel jobs; `merge_indexes` joins the parts back in order."""
     base = Path(csv_path).parent / "images"
     with open(csv_path, newline="") as f:
         rows = list(csv.DictReader(f))
     if not rows:
         raise ValueError(f"{csv_path} lists no photos")
+    rows = rows[:limit] if limit else rows
+    start = 0
+    if shard:
+        i, n = shard
+        start, stop = len(rows) * i // n, len(rows) * (i + 1) // n
+        rows = rows[start:stop]
     paths = [base / r["path"] for r in rows]
     coords = [(float(r["lat"]), float(r["lon"])) for r in rows]
     sequences = [r.get("sequence", "") for r in rows]
-    return save_index(paths, coords, sequences, embedder, out, batch_size, log)
+    return save_index(paths, coords, sequences, embedder, out, batch_size, log, offset=start)
 
 
-def save_index(paths, coords, sequences, embedder, out, batch_size=32, log=None) -> int:
+def save_index(paths, coords, sequences, embedder, out, batch_size=32, log=None, offset=0) -> int:
     embs = []
     for i in range(0, len(paths), batch_size):
         embs.append(embedder.embed_images(paths[i : i + batch_size]))
@@ -58,8 +73,25 @@ def save_index(paths, coords, sequences, embedder, out, batch_size=32, log=None)
         coords=np.asarray(coords, dtype=np.float64),
         sequences=np.asarray(sequences),
         paths=np.asarray([str(Path(p).name) for p in paths]),
+        model=np.asarray(getattr(embedder, "model_name", DEFAULT_MODEL)),
+        offset=np.asarray(offset),
     )
     return len(paths)
+
+
+def merge_indexes(parts: list[str | Path], out: str | Path) -> int:
+    """Join shard indexes (from build_index_from_csv with `shard`) in their original order."""
+    loaded = sorted((np.load(p) for p in parts), key=lambda d: int(d["offset"]))
+    models = {str(d["model"]) for d in loaded}
+    if len(models) != 1:
+        raise ValueError(f"Shards were built with different models: {models}")
+    np.savez(
+        out,
+        **{k: np.concatenate([d[k] for d in loaded]) for k in ("embeddings", "coords", "sequences", "paths")},
+        model=np.asarray(models.pop()),
+        offset=np.asarray(0),
+    )
+    return sum(len(d["coords"]) for d in loaded)
 
 
 def _approx_km(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -69,10 +101,13 @@ def _approx_km(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 class RetrievalIndex:
-    def __init__(self, path: str | Path | None = None, embeddings=None, coords=None):
+    def __init__(self, path: str | Path | None = None, embeddings=None, coords=None, model: str = DEFAULT_MODEL):
+        self.model = model
         if path is not None:
             data = np.load(path)
             embeddings, coords = data["embeddings"], data["coords"]
+            # Indexes built before the model was recorded used the default model.
+            self.model = str(data["model"]) if "model" in data else DEFAULT_MODEL
         self.embeddings = np.asarray(embeddings)
         self.coords = np.asarray(coords)
 

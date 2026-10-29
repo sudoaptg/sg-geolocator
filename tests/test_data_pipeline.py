@@ -154,3 +154,60 @@ def test_reduce_data_error_is_not_retried(monkeypatch):
     except m.RequestFailed:
         pass
     assert len(attempts) == 1
+
+
+def test_sharded_build_merges_back_in_order(tmp_path):
+    import csv
+
+    from PIL import Image
+
+    from sg_geolocator.retrieval import RetrievalIndex, build_index_from_csv, merge_indexes
+
+    (tmp_path / "images").mkdir()
+    rows = []
+    for i in range(23):
+        Image.new("RGB", (8, 8), (i * 10, 0, 0)).save(tmp_path / "images" / f"{i}.jpg")
+        rows.append({"id": str(i), "lat": 1.3 + i / 1000, "lon": 103.8, "sequence": f"s{i}", "captured_at": "", "path": f"{i}.jpg"})
+    with open(tmp_path / "metadata.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+
+    class FakeEmb:
+        model_name = "fake/clip"
+
+        def embed_images(self, paths):
+            a = np.array([[np.asarray(Image.open(p))[0, 0, 0] + 1.0, 1.0] for p in paths])
+            return a / np.linalg.norm(a, axis=1, keepdims=True)
+
+    parts = []
+    for i in (2, 0, 1):  # shards may finish in any order
+        part = tmp_path / f"part{i}.npz"
+        build_index_from_csv(tmp_path / "metadata.csv", FakeEmb(), part, batch_size=4, log=None, shard=(i, 3))
+        parts.append(part)
+    assert merge_indexes(parts, tmp_path / "index.npz") == 23
+    merged = np.load(tmp_path / "index.npz")
+    assert list(merged["paths"]) == [f"{i}.jpg" for i in range(23)]
+    assert np.allclose(merged["coords"][:, 0], [1.3 + i / 1000 for i in range(23)])
+    assert RetrievalIndex(tmp_path / "index.npz").model == "fake/clip"
+
+
+def test_geocell_save_load_roundtrip(tmp_path):
+    from sg_geolocator.geocell import GeoCellClassifier
+
+    rng = np.random.default_rng(1)
+    coords = np.column_stack([rng.uniform(1.25, 1.45, 300), rng.uniform(103.65, 104.0, 300)])
+    X = np.column_stack([coords - coords.mean(axis=0), rng.normal(scale=0.01, size=(300, 3))])
+    clf = GeoCellClassifier(cell_deg=0.05, steps=50).fit(X, coords)
+    clf.save(tmp_path / "g.npz", model="geolocal/StreetCLIP")
+    back = GeoCellClassifier.load(tmp_path / "g.npz")
+    assert back.model == "geolocal/StreetCLIP"
+    assert np.allclose(back.predict(X[:5])[0], clf.predict(X[:5])[0])
+
+
+def test_index_without_model_field_defaults_to_base_clip(tmp_path):
+    from sg_geolocator.embedder import DEFAULT_MODEL
+    from sg_geolocator.retrieval import RetrievalIndex
+
+    np.savez(tmp_path / "old.npz", embeddings=np.eye(2, dtype=np.float32), coords=np.zeros((2, 2)))
+    assert RetrievalIndex(tmp_path / "old.npz").model == DEFAULT_MODEL
