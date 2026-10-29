@@ -1,0 +1,22 @@
+[
+  {"name": "Marina Bay Sands", "prompt": "Marina Bay Sands hotel with three towers and a rooftop ship", "lat": 1.2834, "lon": 103.8607},
+  {"name": "Merlion Park", "prompt": "the Merlion statue spouting water in Singapore", "lat": 1.2868, "lon": 103.8545},
+  {"name": "Gardens by the Bay", "prompt": "the Supertree Grove at Gardens by the Bay", "lat": 1.2816, "lon": 103.8636},
+  {"name": "Singapore Flyer", "prompt": "the Singapore Flyer giant observation wheel", "lat": 1.2893, "lon": 103.8631},
+  {"name": "Esplanade", "prompt": "the Esplanade theatres with spiky durian-shaped domes", "lat": 1.2898, "lon": 103.8555},
+  {"name": "Raffles Place", "prompt": "Raffles Place skyscrapers in Singapore's central business district", "lat": 1.2840, "lon": 103.8514},
+  {"name": "Clarke Quay", "prompt": "colourful riverside restaurants at Clarke Quay, Singapore River", "lat": 1.2906, "lon": 103.8465},
+  {"name": "Chinatown", "prompt": "Chinatown Singapore shophouses with red lanterns", "lat": 1.2838, "lon": 103.8443},
+  {"name": "Little India", "prompt": "Little India Singapore colourful street and Indian shops", "lat": 1.3066, "lon": 103.8518},
+  {"name": "Kampong Glam", "prompt": "Sultan Mosque with a golden dome in Kampong Glam", "lat": 1.3022, "lon": 103.8590},
+  {"name": "Orchard Road", "prompt": "Orchard Road shopping malls in Singapore", "lat": 1.3048, "lon": 103.8318},
+  {"name": "Singapore Botanic Gardens", "prompt": "Singapore Botanic Gardens with lake and bandstand", "lat": 1.3138, "lon": 103.8159},
+  {"name": "Jewel Changi Airport", "prompt": "the Rain Vortex indoor waterfall at Jewel Changi Airport", "lat": 1.3602, "lon": 103.9898},
+  {"name": "Sentosa", "prompt": "Sentosa island beach in Singapore", "lat": 1.2494, "lon": 103.8303},
+  {"name": "East Coast Park", "prompt": "East Coast Park beach and cycling path in Singapore", "lat": 1.3008, "lon": 103.9122},
+  {"name": "MacRitchie Reservoir", "prompt": "MacRitchie Reservoir treetop walk in tropical rainforest", "lat": 1.3442, "lon": 103.8355},
+  {"name": "Jurong Lake Gardens", "prompt": "Jurong Lake Gardens in western Singapore", "lat": 1.3389, "lon": 103.7290},
+  {"name": "Punggol Waterway", "prompt": "Punggol Waterway Park with HDB flats along a canal", "lat": 1.4086, "lon": 103.9050},
+  {"name": "Pulau Ubin", "prompt": "Pulau Ubin rural island with kampong houses", "lat": 1.4044, "lon": 103.9625},
+  {"name": "Bird Paradise (Mandai)", "prompt": "Bird Paradise aviary at Mandai wildlife reserve", "lat": 1.4043, "lon": 103.7880}
+]
