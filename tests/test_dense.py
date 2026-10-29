@@ -70,3 +70,14 @@ def test_evaluate_dense_options(tmp_path):
     assert sure and 0 < m[sure[0]]["coverage"] <= 1
     assert res["model"] == "eigenplaces/ResNet50/512"
     assert "of queries" in to_markdown(res)
+
+
+def test_hub_repos_are_pre_trusted_once(tmp_path):
+    from types import SimpleNamespace
+
+    from sg_geolocator.embedder import _trust_hub_repos
+
+    fake_torch = SimpleNamespace(hub=SimpleNamespace(get_dir=lambda: str(tmp_path / "hub")))
+    _trust_hub_repos(fake_torch, ["gmberton_eigenplaces", "gmberton_cosplace"])
+    _trust_hub_repos(fake_torch, ["gmberton_cosplace"])
+    assert (tmp_path / "hub" / "trusted_list").read_text().split() == ["gmberton_eigenplaces", "gmberton_cosplace"]

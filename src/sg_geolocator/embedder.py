@@ -71,6 +71,7 @@ class PlaceEmbedder:
         self._torch = torch
         self.model_name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        _trust_hub_repos(torch, ["gmberton_eigenplaces", "gmberton_cosplace"])
         self.model = torch.hub.load(
             "gmberton/eigenplaces", "get_trained_model", backbone=backbone, fc_output_dim=int(dim), trust_repo=True
         ).to(self.device).eval()
@@ -89,6 +90,18 @@ class PlaceEmbedder:
         with torch.no_grad():
             feats = self.model(x.to(self.device))
         return _normalize(feats.cpu().numpy())
+
+
+def _trust_hub_repos(torch, repos: list[str]) -> None:
+    """Pre-approve torch.hub repos. EigenPlaces loads CosPlace through torch.hub without
+    trust_repo=True, which otherwise stops at an interactive y/N prompt (and crashes in CI)."""
+    path = Path(torch.hub.get_dir()) / "trusted_list"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    known = set(path.read_text().split()) if path.exists() else set()
+    missing = [r for r in repos if r not in known]
+    if missing:
+        with open(path, "a") as f:
+            f.write("".join(f"{r}\n" for r in missing))
 
 
 def make_embedder(model_name: str = DEFAULT_MODEL):
