@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from .evaluate import evaluate_index, to_markdown
 
-    result = evaluate_index(args.index, args.test_fraction)
+    result = evaluate_index(args.index, args.test_fraction, log=print)
     md = to_markdown(result)
     print(md)
     if args.json_out:

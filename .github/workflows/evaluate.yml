@@ -1,0 +1,39 @@
+name: Re-evaluate index
+
+# Score a released index with every method, without re-downloading or re-embedding photos.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag of the index (empty = latest release)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Evaluation only needs numpy; skip torch/transformers.
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - name: Download index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download ${{ inputs.tag }} --pattern index.npz
+      - name: Evaluate
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          sg-geolocate evaluate index.npz --json-out eval.json --md-out eval.md
+          cat eval.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval
+          path: eval.*

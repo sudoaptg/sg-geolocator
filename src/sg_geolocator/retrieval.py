@@ -62,6 +62,12 @@ def save_index(paths, coords, sequences, embedder, out, batch_size=32, log=None)
     return len(paths)
 
 
+def _approx_km(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Distance in km between (lat, lon) arrays; equirectangular is exact enough at 1°N."""
+    d = a - b
+    return np.sqrt((d[..., 0] * 111.0) ** 2 + (d[..., 1] * 111.0 * np.cos(np.radians(1.35))) ** 2)
+
+
 class RetrievalIndex:
     def __init__(self, path: str | Path | None = None, embeddings=None, coords=None):
         if path is not None:
@@ -70,16 +76,38 @@ class RetrievalIndex:
         self.embeddings = np.asarray(embeddings)
         self.coords = np.asarray(coords)
 
-    def predict(self, image_emb: np.ndarray, k: int = 10, temperature: float = 0.05) -> Prediction:
+    def predict(
+        self,
+        image_emb: np.ndarray,
+        k: int = 10,
+        temperature: float = 0.05,
+        method: str = "cluster",
+        radius_km: float = 1.0,
+    ) -> Prediction:
+        """Locate from the top-k most similar gallery photos.
+
+        method="mean" averages all k neighbours' coordinates, which drifts towards the middle
+        of the island when they disagree. method="cluster" keeps only the neighbours within
+        `radius_km` of the best-supported neighbour, i.e. the densest agreeing group."""
         sims = self.embeddings @ image_emb
         k = min(k, len(sims))
         top = np.argpartition(-sims, k - 1)[:k]
         weights = np.exp((sims[top] - sims[top].max()) / temperature)
         weights /= weights.sum()
-        lat, lon = (weights[:, None] * self.coords[top]).sum(axis=0)
+        coords = self.coords[top]
 
-        # Confidence: how tightly the neighbours agree (1.0 when all within ~0 km).
-        spread_km = float(np.sqrt((weights * ((self.coords[top] - [lat, lon]) ** 2).sum(axis=1)).sum()) * 111)
-        confidence = 1.0 / (1.0 + spread_km)
+        if method == "cluster" and k > 1:
+            near = _approx_km(coords[:, None, :], coords[None, :, :]) <= radius_km
+            keep = near[int(np.argmax(near @ weights))]
+            # Confidence: share of the neighbours' weight that agrees on this spot.
+            confidence = float(weights[keep].sum())
+            coords, weights = coords[keep], weights[keep] / weights[keep].sum()
+            lat, lon = (weights[:, None] * coords).sum(axis=0)
+        else:
+            lat, lon = (weights[:, None] * coords).sum(axis=0)
+            # Confidence: how tightly the neighbours agree (1.0 when all within ~0 km).
+            spread_km = float(np.sqrt((weights * _approx_km(coords, np.array([lat, lon])) ** 2).sum()))
+            confidence = 1.0 / (1.0 + spread_km)
+
         label, _ = nearest_landmark(lat, lon)
         return Prediction(float(lat), float(lon), confidence, "retrieval", f"near {label}")

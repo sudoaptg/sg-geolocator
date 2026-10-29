@@ -61,9 +61,42 @@ def test_evaluate_index_beats_baseline(tmp_path):
              sequences=np.repeat([f"s{i}" for i in range(n)], 2), paths=np.array(["x"] * 2 * n))
 
     result = evaluate_index(str(path))
-    assert result["retrieval"]["n"] > 0
-    assert result["baseline_centre"]["median_km"] > 5
-    assert "| retrieval |" in to_markdown(result)
+    m = result["methods"]
+    assert m["baseline_centre"]["median_km"] > 5
+    for name in ("knn10_cluster", "top1", "geocell_0.02deg"):
+        assert m[name]["n"] > 0
+        assert m[name]["median_km"] < m["baseline_centre"]["median_km"], name
+    assert result["best"] in m
+    assert "| baseline_centre |" in to_markdown(result)
+
+
+def test_cluster_ignores_outlier_neighbours():
+    from sg_geolocator.retrieval import RetrievalIndex
+
+    # Three near-identical matches at A, two slightly weaker at far-away B and C.
+    emb = np.array([[1, 0], [1, 0.01], [1, 0.02], [0.9, 0.3], [0.9, -0.3]], dtype=np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    coords = np.array([[1.30, 103.80], [1.301, 103.801], [1.299, 103.80], [1.44, 103.99], [1.25, 103.62]])
+    idx = RetrievalIndex(embeddings=emb, coords=coords)
+    q = np.array([1.0, 0.0], dtype=np.float32)
+
+    cluster = idx.predict(q, k=5, temperature=1.0, method="cluster")
+    mean = idx.predict(q, k=5, temperature=1.0, method="mean")
+    assert abs(cluster.lat - 1.30) < 0.002 and abs(cluster.lon - 103.80) < 0.002
+    assert abs(mean.lat - 1.30) > abs(cluster.lat - 1.30)  # the mean gets dragged away
+    assert 0.5 < cluster.confidence <= 1.0
+
+
+def test_geocell_learns_location_direction():
+    from sg_geolocator.geocell import GeoCellClassifier
+
+    rng = np.random.default_rng(0)
+    coords = np.column_stack([rng.uniform(1.25, 1.45, 2000), rng.uniform(103.65, 104.0, 2000)])
+    X = np.column_stack([coords - coords.mean(axis=0), rng.normal(scale=0.01, size=(2000, 4))])
+    clf = GeoCellClassifier(cell_deg=0.05, steps=300, lr=0.05).fit(X[:1800], coords[:1800])
+    pred, conf = clf.predict(X[1800:])
+    err = np.abs(pred - coords[1800:]).max(axis=1)
+    assert np.median(err) < 0.05 and conf.shape == (200,)
 
 
 def test_search_splits_failing_tile_and_skips_smallest(monkeypatch):
