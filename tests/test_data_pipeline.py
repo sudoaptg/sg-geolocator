@@ -82,3 +82,42 @@ def test_search_splits_failing_tile_and_skips_smallest(monkeypatch):
     monkeypatch.setattr(client, "_get", fake_get)
     out = client.search((103.8, 1.3, 103.81, 1.31))
     assert out and client.skipped_tiles > 0
+
+
+def test_as_array_handles_both_transformers_return_types():
+    from types import SimpleNamespace
+
+    from sg_geolocator.embedder import _as_array
+
+    class FakeTensor:
+        def __init__(self, a):
+            self.a = a
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self.a
+
+    a = np.ones((2, 4))
+    assert _as_array(FakeTensor(a)) is a  # transformers 4.x
+    assert _as_array(SimpleNamespace(pooler_output=FakeTensor(a))) is a  # transformers 5.x
+
+
+def test_reduce_data_error_is_not_retried(monkeypatch):
+    from sg_geolocator import mapillary as m
+
+    client = m.MapillaryClient("tok", log=lambda *_: None)
+    attempts = []
+
+    class Resp:
+        status_code = 500
+        text = '{"error":{"code":1,"message":"Please reduce the amount of data you\'re asking for"}}'
+
+    monkeypatch.setattr(client.session, "get", lambda *a, **k: attempts.append(1) or Resp())
+    monkeypatch.setattr(m.time, "sleep", lambda s: None)
+    try:
+        client._get({"bbox": "0,0,1,1"})
+    except m.RequestFailed:
+        pass
+    assert len(attempts) == 1

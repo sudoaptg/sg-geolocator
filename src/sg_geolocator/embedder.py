@@ -26,17 +26,25 @@ class ClipEmbedder:
         inputs = self.processor(images=images, return_tensors="pt").to(self.device)
         with self._torch.no_grad():
             feats = self.model.get_image_features(**inputs)
-        return _normalize(feats.cpu().numpy())
+        return _normalize(_as_array(feats))
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(self.device)
         with self._torch.no_grad():
             feats = self.model.get_text_features(**inputs)
-        return _normalize(feats.cpu().numpy())
+        return _normalize(_as_array(feats))
 
     @property
     def logit_scale(self) -> float:
         return float(self.model.logit_scale.exp().item())
+
+
+def _as_array(feats) -> np.ndarray:
+    # transformers 4.x returns the projected features as a tensor; 5.x wraps them in a
+    # model output with the projection stored in `pooler_output`.
+    if hasattr(feats, "pooler_output"):
+        feats = feats.pooler_output
+    return feats.cpu().numpy()
 
 
 def _normalize(x: np.ndarray) -> np.ndarray:

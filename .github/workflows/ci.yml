@@ -16,3 +16,39 @@ jobs:
       # Unit tests don't touch the model, so skip installing torch/transformers.
       - run: pip install pillow numpy requests pytest
       - run: PYTHONPATH=src pytest -q
+
+  # Loads the real CLIP model so library API changes surface here, not an hour into an index build.
+  model-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-clip-vit-base-patch32
+      - name: Embed an image and run the pipeline end to end
+        run: |
+          python - <<'EOF'
+          import numpy as np
+          from PIL import Image
+          from sg_geolocator.embedder import ClipEmbedder
+          from sg_geolocator.landmarks import LandmarkRecognizer
+          from sg_geolocator.retrieval import save_index, RetrievalIndex
+
+          Image.new("RGB", (320, 240), (90, 140, 200)).save("a.jpg")
+          Image.new("RGB", (320, 240), (40, 120, 40)).save("b.jpg")
+          e = ClipEmbedder()
+          img = e.embed_images(["a.jpg", "b.jpg"])
+          assert img.shape == (2, 512) and np.allclose(np.linalg.norm(img, axis=1), 1, atol=1e-4)
+          assert e.embed_texts(["a street in Singapore"]).shape == (1, 512)
+          print("landmark:", LandmarkRecognizer(e).predict(img[0]))
+          save_index(["a.jpg", "b.jpg"], [(1.30, 103.80), (1.35, 103.90)], ["s1", "s2"], e, "i.npz")
+          print("retrieval:", RetrievalIndex("i.npz").predict(img[0], k=2))
+          EOF

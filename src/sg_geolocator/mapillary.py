@@ -53,8 +53,8 @@ class MapillaryClient:
                 last = f"HTTP {r.status_code}: {r.text[:200]}"
                 if r.status_code in (401, 403):
                     raise RuntimeError(f"Mapillary rejected the token ({last})")
-                if r.status_code == 400:
-                    break  # bad request; retrying won't help, but a smaller bbox might
+                if r.status_code == 400 or "reduce the amount of data" in r.text:
+                    break  # retrying won't help, but a smaller bbox will
                 if r.status_code == 429:
                     time.sleep(60)  # rate limited: back off hard
                     continue
