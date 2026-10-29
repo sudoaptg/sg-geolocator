@@ -186,6 +186,7 @@ def collect(
     log(f"Downloading {len(chosen)} images (from {len(seen)} candidates)")
 
     dl = requests.Session()  # thumbnail URLs are pre-signed; no auth header
+    dl.mount("https://", requests.adapters.HTTPAdapter(pool_connections=workers, pool_maxsize=workers))
     with ThreadPoolExecutor(workers) as pool:
         rows = [r for r in pool.map(lambda rec: _download(dl, rec, img_dir), chosen) if r]
 

@@ -50,6 +50,8 @@ def build_dense_shard(
 
     embs, coords, seqs, ids = [], [], [], []
     session = requests.Session()
+    # One pooled connection per download thread (the default pool of 10 discards the rest).
+    session.mount("https://", requests.adapters.HTTPAdapter(pool_connections=workers, pool_maxsize=workers))
     tmp = Path(tempfile.mkdtemp())
     try:
         with ThreadPoolExecutor(workers) as pool:
