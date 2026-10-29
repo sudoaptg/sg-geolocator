@@ -23,7 +23,17 @@ import numpy as np
 
 from .geo import haversine_km
 
-OVERPASS_URL = os.environ.get("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
+# Public Overpass servers, tried in order (override with OVERPASS_URL).
+OVERPASS_URLS = [os.environ["OVERPASS_URL"]] if os.environ.get("OVERPASS_URL") else [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+# overpass-api.de answers 406 to requests without an identifying User-Agent.
+HEADERS = {
+    "User-Agent": "sg-geolocator/0.1 (+https://github.com/sudoaptg/sg-geolocator)",
+    "Accept": "application/json",
+}
 OVERPASS_QUERY = """
 [out:json][timeout:300];
 area["ISO3166-1"="SG"][admin_level=2]->.sg;
@@ -69,11 +79,21 @@ class Roads:
 
             if log:
                 log("Downloading Singapore road network from OpenStreetMap (one-off)...")
-            r = requests.post(OVERPASS_URL, data={"data": OVERPASS_QUERY}, timeout=600)
-            r.raise_for_status()
-            roads = cls.from_overpass_json(r.json())
-            if not roads.roads:
-                raise RuntimeError("Overpass returned no roads")
+            errors = []
+            for url in OVERPASS_URLS:
+                try:
+                    r = requests.post(url, data={"data": OVERPASS_QUERY}, headers=HEADERS, timeout=600)
+                    r.raise_for_status()
+                    roads = cls.from_overpass_json(r.json())
+                    if roads.roads:
+                        break
+                    errors.append(f"{url}: no roads in response")
+                except (requests.RequestException, ValueError) as exc:
+                    errors.append(f"{url}: {exc}")
+                    if log:
+                        log(f"  {errors[-1]}")
+            else:
+                raise RuntimeError("Could not download the road network: " + "; ".join(errors))
             path.parent.mkdir(parents=True, exist_ok=True)
             with gzip.open(path, "wt") as f:
                 json.dump(roads.roads, f)
