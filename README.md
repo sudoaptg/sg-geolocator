@@ -20,9 +20,12 @@ The pipeline runs these stages and returns the most confident answer:
    junction where they meet.
 3. **Exact-spot matching (place recognition):** a dense index of Mapillary photos every ~17 m,
    embedded with [EigenPlaces](https://github.com/gmberton/EigenPlaces), a model trained to
-   recognise the *same place* across viewpoints and years. When the top matches agree on
-   one spot (within 100 m), that spot is the answer: typically tens of metres off. Built by
-   the **Build place index** workflow (20 parallel jobs; only descriptors are kept).
+   recognise the *same place* across viewpoints and years. When at least half of the 50
+   closest matches agree on one spot (within 100 m), that spot is the answer. On held-out
+   Mapillary capture sessions (190k-photo index) that happens for ~19% of photos, and those
+   answers are within 50 m 88% of the time and within 1 km 95% of the time; other photos
+   fall back to the area guess. Built by the **Build place index** workflow (20 parallel
+   jobs; only descriptors are kept).
 4. **Landmark recognition (zero-shot):** a CLIP model scores the image against text prompts for
    well-known Singapore landmarks (`src/sg_geolocator/data/landmarks.json`). A confident match
    gives a precise coordinate.

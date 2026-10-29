@@ -10,6 +10,10 @@ from .geo import Prediction, in_singapore, nearest_landmark
 LANDMARK_THRESHOLD = 0.5
 PLACE_THRESHOLD = 0.5  # share of the top matches that agree on one spot (within PLACE_RADIUS_KM)
 PLACE_RADIUS_KM = 0.1
+# On held-out sequences (190k-photo index): k=50 answers 19% of photos, 88% within 50 m and
+# 95% within 1 km; k=10 answers 30% but only 80% within 1 km. Prefer being right over
+# answering often: a wrong "exact spot" is worse than falling back to the area guess.
+PLACE_K = 50
 CLUE_THRESHOLD = 0.5  # even a road name alone usually beats the km-scale visual guess
 
 
@@ -71,7 +75,7 @@ class Geolocator:
             return landmark
         if self._places is not None:
             place_emb = self._place_embedder.embed_images([path])[0]
-            match = self._places.predict(place_emb, k=10, method="cluster", radius_km=PLACE_RADIUS_KM)
+            match = self._places.predict(place_emb, k=PLACE_K, method="cluster", radius_km=PLACE_RADIUS_KM)
             if match.confidence >= PLACE_THRESHOLD:
                 match.source = "place-match"
                 return match
