@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -27,22 +28,47 @@ def build_index(
             coords.append(gps)
     if not paths:
         raise ValueError(f"No geotagged Singapore photos found in {folder}")
+    return save_index(paths, coords, [""] * len(paths), embedder, out, batch_size)
 
-    embs = [embedder.embed_images(paths[i : i + batch_size]) for i in range(0, len(paths), batch_size)]
+
+def build_index_from_csv(
+    csv_path: str | Path, embedder: ClipEmbedder, out: str | Path, batch_size: int = 32, log=print
+) -> int:
+    """Embed photos listed in a metadata.csv (columns: path, lat, lon, sequence)."""
+    base = Path(csv_path).parent / "images"
+    with open(csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise ValueError(f"{csv_path} lists no photos")
+    paths = [base / r["path"] for r in rows]
+    coords = [(float(r["lat"]), float(r["lon"])) for r in rows]
+    sequences = [r.get("sequence", "") for r in rows]
+    return save_index(paths, coords, sequences, embedder, out, batch_size, log)
+
+
+def save_index(paths, coords, sequences, embedder, out, batch_size=32, log=None) -> int:
+    embs = []
+    for i in range(0, len(paths), batch_size):
+        embs.append(embedder.embed_images(paths[i : i + batch_size]))
+        if log and (i // batch_size) % 50 == 0:
+            log(f"  embedded {i + len(embs[-1])}/{len(paths)}")
     np.savez(
         out,
         embeddings=np.concatenate(embs).astype(np.float32),
         coords=np.asarray(coords, dtype=np.float64),
-        paths=np.asarray([str(p) for p in paths]),
+        sequences=np.asarray(sequences),
+        paths=np.asarray([str(Path(p).name) for p in paths]),
     )
     return len(paths)
 
 
 class RetrievalIndex:
-    def __init__(self, path: str | Path):
-        data = np.load(path)
-        self.embeddings = data["embeddings"]
-        self.coords = data["coords"]
+    def __init__(self, path: str | Path | None = None, embeddings=None, coords=None):
+        if path is not None:
+            data = np.load(path)
+            embeddings, coords = data["embeddings"], data["coords"]
+        self.embeddings = np.asarray(embeddings)
+        self.coords = np.asarray(coords)
 
     def predict(self, image_emb: np.ndarray, k: int = 10, temperature: float = 0.05) -> Prediction:
         sims = self.embeddings @ image_emb

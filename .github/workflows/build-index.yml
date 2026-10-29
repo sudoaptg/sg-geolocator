@@ -1,0 +1,77 @@
+name: Build reference index
+
+# Run from the Actions tab ("Run workflow"). Needs the MAPILLARY_TOKEN repository secret.
+on:
+  workflow_dispatch:
+    inputs:
+      max_images:
+        description: "Maximum reference photos to download"
+        default: "15000"
+      subcell:
+        description: "Thinning grid size in degrees (0.002 is about 220 m)"
+        default: "0.002"
+      per_subcell:
+        description: "Photos kept per grid square"
+        default: "2"
+
+permissions:
+  contents: write  # to publish the index as a release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install (CPU-only torch)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-clip-vit-base-patch32
+
+      - name: Download Singapore boundary (geoBoundaries ADM0)
+        run: |
+          url=$(curl -fsSL https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
+                | python -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])")
+          curl -fsSL "$url" -o sg_boundary.geojson
+          python -c "from sg_geolocator.geo import Boundary as B; b=B.from_geojson('sg_boundary.geojson'); assert b.contains(1.3521, 103.8198); assert not b.contains(1.4927, 103.7414); print('boundary ok')"
+
+      - name: Fetch reference photos from Mapillary
+        env:
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+        run: |
+          if [ -z "$MAPILLARY_TOKEN" ]; then echo "::error::Add the MAPILLARY_TOKEN repository secret first"; exit 1; fi
+          sg-geolocate fetch-mapillary --out data/mapillary --boundary sg_boundary.geojson \
+            --max-images ${{ inputs.max_images }} --subcell ${{ inputs.subcell }} --per-subcell ${{ inputs.per_subcell }}
+
+      - name: Build index
+        run: sg-geolocate build-index --metadata data/mapillary/metadata.csv --out index.npz
+
+      - name: Evaluate
+        run: |
+          sg-geolocate evaluate index.npz --json-out eval.json --md-out eval.md
+          cat eval.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="index-$(date -u +%Y%m%d-%H%M)"
+          cp data/mapillary/metadata.csv metadata.csv
+          {
+            cat eval.md
+            echo
+            echo "Settings: max_images=${{ inputs.max_images }}, subcell=${{ inputs.subcell }}, per_subcell=${{ inputs.per_subcell }}"
+            echo
+            echo "Reference imagery © Mapillary contributors, CC BY-SA 4.0. Boundary: geoBoundaries."
+          } > notes.md
+          gh release create "$tag" index.npz metadata.csv eval.json --title "$tag" --notes-file notes.md

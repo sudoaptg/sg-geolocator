@@ -7,8 +7,10 @@ import math
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import resources
+from pathlib import Path
 
-# Rough bounding box of Singapore (main island plus offshore islands).
+# Rough bounding box of Singapore (main island plus offshore islands). It also clips
+# bits of Johor and the Riau islands; use a Boundary when that matters.
 SG_BOUNDS = {"lat_min": 1.15, "lat_max": 1.48, "lon_min": 103.59, "lon_max": 104.10}
 
 
@@ -42,6 +44,56 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * r * math.asin(math.sqrt(a))
+
+
+class Boundary:
+    """Land boundary from a GeoJSON (Multi)Polygon, e.g. geoBoundaries SGP ADM0."""
+
+    def __init__(self, polygons: list[list[list[tuple[float, float]]]]):
+        # polygons -> rings (first is the outer ring, rest are holes) -> (lon, lat) points
+        self.polygons = polygons
+
+    @classmethod
+    def from_geojson(cls, path: str | Path) -> "Boundary":
+        data = json.loads(Path(path).read_text())
+        geoms = [f["geometry"] for f in data["features"]] if "features" in data else [data]
+        polygons = []
+        for g in geoms:
+            coords = g["coordinates"]
+            polys = [coords] if g["type"] == "Polygon" else coords
+            for poly in polys:
+                polygons.append([[(float(x), float(y)) for x, y, *_ in ring] for ring in poly])
+        return cls(polygons)
+
+    def contains(self, lat: float, lon: float) -> bool:
+        for rings in self.polygons:
+            if _in_ring(lon, lat, rings[0]) and not any(_in_ring(lon, lat, h) for h in rings[1:]):
+                return True
+        return False
+
+    def intersects_box(self, min_lon: float, min_lat: float, max_lon: float, max_lat: float) -> bool:
+        """Conservative test: true if any boundary vertex is in the box or a box corner/centre is on land."""
+        for rings in self.polygons:
+            for x, y in rings[0]:
+                if min_lon <= x <= max_lon and min_lat <= y <= max_lat:
+                    return True
+        corners = [
+            (min_lat, min_lon), (min_lat, max_lon), (max_lat, min_lon), (max_lat, max_lon),
+            ((min_lat + max_lat) / 2, (min_lon + max_lon) / 2),
+        ]
+        return any(self.contains(lat, lon) for lat, lon in corners)
+
+
+def _in_ring(x: float, y: float, ring: list[tuple[float, float]]) -> bool:
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
 
 
 @lru_cache(maxsize=1)

@@ -35,20 +35,55 @@ sg-geolocate build-index path/to/reference_photos/ --out index.npz
 sg-geolocate predict path/to/photo.jpg --index index.npz
 ```
 
-## Getting reference data
+## Building the reference gallery on GitHub
 
-The retrieval stage is only as good as its gallery. Good sources:
+The **Build reference index** workflow (`.github/workflows/build-index.yml`) does everything on
+GitHub's runners. No local GPU or downloads are needed.
 
-- **Mapillary**: crowd-sourced street-level imagery with coordinates (API, CC BY-SA).
-- **Your own photos**: phone pictures keep GPS in EXIF by default.
-- **data.gov.sg / URA Master Plan**: planning-area boundaries, useful for reporting results by area.
+1. Get a free Mapillary client token: <https://www.mapillary.com/dashboard/developers>, then
+   "Register application" and copy the **client token** (it starts with `MLY|`).
+2. Add it as a repository secret named `MAPILLARY_TOKEN`
+   (Settings → Secrets and variables → Actions → New repository secret).
+3. Go to Actions → Build reference index → Run workflow.
 
-Aim for even coverage across the island. A grid of roughly 200–500 m spacing is a sensible start.
+The workflow will:
+
+- download Singapore's land boundary (geoBoundaries) so photos from Johor and Batam are dropped
+- search Mapillary across the island and thin the results to at most 2 photos per ~220 m grid
+  square, each from a different capture session; 360° panoramas are skipped
+- embed the photos with CLIP and build `index.npz`
+- **evaluate** on held-out capture sessions (median error, % within 0.5/1/5/10 km, compared with
+  a "guess the centre" baseline) and show the table on the run's summary page
+- publish `index.npz`, `metadata.csv` and `eval.json` as a GitHub **Release**
+
+Then use the released index locally:
+
+```bash
+sg-geolocate predict photo.jpg --index index.npz
+```
+
+No model training happens here. CLIP is used as-is, and the gallery is what makes it work.
+Fine-tuning is a later step, worth doing only if the evaluation numbers show it's needed.
+
+You can also run the same steps locally:
+
+```bash
+export MAPILLARY_TOKEN='MLY|...'
+sg-geolocate fetch-mapillary --out data/mapillary --max-images 2000
+sg-geolocate build-index --metadata data/mapillary/metadata.csv --out index.npz
+sg-geolocate evaluate index.npz
+```
+
+Other gallery sources: your own phone photos (GPS stays in EXIF by default), using
+`sg-geolocate build-index path/to/folder/`.
+
+Reference imagery © Mapillary contributors, licensed CC BY-SA 4.0. Only embeddings and image IDs
+are published, not the photos themselves.
 
 ## Roadmap
 
-- [ ] Collect a reference gallery covering all 55 planning areas
-- [ ] Evaluation script: median error (km) and accuracy within 1 km / 5 km
+- [x] Collect a reference gallery from Mapillary (GitHub Actions workflow)
+- [x] Evaluation: median error (km) and accuracy within 0.5 / 1 / 5 / 10 km
 - [ ] Map predictions to URA planning areas using official boundary GeoJSON
 - [ ] OCR stage for signage (street names, MRT station names, block numbers)
 - [ ] Fine-tune CLIP on Singapore imagery (geo-cell classification)
