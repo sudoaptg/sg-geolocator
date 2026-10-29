@@ -42,12 +42,32 @@ out geom;
 """
 CACHE_PATH = Path(os.environ.get("SG_GEOLOCATOR_CACHE", Path.home() / ".cache" / "sg_geolocator")) / "roads.json.gz"
 
-MATCH_CUTOFF = 0.82
 JUNCTION_KM = 0.05  # roads closer than this are treated as meeting
 
+# Generic words in road names. Only the *distinctive* rest of a name (e.g. "SEMBAWANG" in
+# "SEMBAWANG WAY") is fuzzy-matched; these words and any numbers must match exactly, so
+# a garbled "Bahru Rd" can't become "Bath Road" just because both end in "ROAD".
+TYPE_WORDS = {
+    "ROAD", "STREET", "AVENUE", "DRIVE", "CRESCENT", "LANE", "PLACE", "TERRACE", "CLOSE", "WAY",
+    "LINK", "BOULEVARD", "CENTRAL", "WALK", "RISE", "GROVE", "VIEW", "HILL", "GARDEN", "GARDENS",
+    "PARK", "HEIGHTS", "RING", "LOOP", "GREEN", "VALE", "JALAN", "LORONG", "UPPER", "LOWER",
+    "NORTH", "SOUTH", "EAST", "WEST", "EXPRESSWAY",
+}
 
-def _digits(name: str) -> list[str]:
-    return re.findall(r"\d+", name)
+
+def _parts(name: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """(distinctive core, generic words, numbers) of a road name."""
+    words = name.upper().split()
+    core = " ".join(w for w in words if w not in TYPE_WORDS and not w.isdigit())
+    return core, tuple(sorted(w for w in words if w in TYPE_WORDS)), tuple(re.findall(r"\d+", name))
+
+
+def _core_cutoff(core: str) -> float | None:
+    """How similar a misread core must be; None = must match exactly (too short to guess)."""
+    n = len(core.replace(" ", ""))
+    if n < 5:
+        return None
+    return 0.8 if n < 8 else 0.75
 
 
 class Roads:
@@ -56,6 +76,10 @@ class Roads:
         self.roads = roads
         self.names = sorted(roads)
         self._points: dict[str, np.ndarray] = {}
+        self._by_shape: dict[tuple, list[tuple[str, str]]] = {}  # (generic words, numbers) -> [(core, name)]
+        for n in self.names:
+            core, types, digits = _parts(n)
+            self._by_shape.setdefault((types, digits), []).append((core, n))
 
     # ------------------------------------------------------------------ loading
 
@@ -106,13 +130,22 @@ class Roads:
     def match(self, name: str) -> str | None:
         """Canonical road name for an OCR'd (and abbreviation-expanded) name, or None.
 
-        Numbers must agree exactly: 'TAMPINES AVENUE 5' must never match 'AVENUE 3'."""
-        name = name.upper().strip()
+        Generic words and numbers must agree exactly ('TAMPINES AVENUE 5' never matches
+        'AVENUE 3'); only the distinctive part may be misread, and only if it is long enough
+        that a close match is unlikely to be a coincidence."""
+        name = " ".join(name.upper().split())
         if name in self.roads:
             return name
-        candidates = [n for n in self.names if _digits(n) == _digits(name)]
-        best = difflib.get_close_matches(name, candidates, n=1, cutoff=MATCH_CUTOFF)
-        return best[0] if best else None
+        core, types, digits = _parts(name)
+        cutoff = _core_cutoff(core)
+        if cutoff is None:
+            return None
+        best, best_ratio = None, cutoff
+        for cand_core, cand in self._by_shape.get((types, digits), []):
+            ratio = difflib.SequenceMatcher(None, core, cand_core).ratio()
+            if ratio >= best_ratio:
+                best, best_ratio = cand, ratio
+        return best
 
     def points(self, name: str) -> np.ndarray:
         if name not in self._points:

@@ -162,6 +162,20 @@ def test_road_match_corrects_ocr_but_never_changes_numbers():
     assert ROADS.match("TOTALLY DIFFERENT ROAD") is None
 
 
+def test_road_match_rejects_short_or_different_garbles():
+    roads = Roads({n: [[[1.3, 103.8], [1.31, 103.81]]] for n in (
+        "BATH ROAD", "ALPS AVENUE", "MAY ROAD", "SEMBAWANG WAY", "HALUS LINK", "SCOTTS ROAD")})
+    # Real misreads from the evaluation that were wrongly matched before:
+    assert roads.match("BAHRU ROAD") is None       # was BATH ROAD, 13 km off
+    assert roads.match("AST AVENUE") is None       # was ALPS AVENUE, 11.6 km off
+    assert roads.match("AALY ROAD") is None        # was MAY ROAD, 15.7 km off
+    # Real misreads that should still be corrected:
+    assert roads.match("SERHAWANG WAY") == "SEMBAWANG WAY"
+    assert roads.match("HALOS LINK") == "HALUS LINK"
+    assert roads.match("SCOTS ROAD") == "SCOTTS ROAD"
+    assert roads.match("SEMBAWANG ROAD") is None   # right core, wrong road type
+
+
 def test_junction_of_two_roads():
     js = ROADS.junctions("YIO CHU KANG ROAD", "SELETAR ROAD")
     assert len(js) == 1 and abs(js[0][0] - 1.35) < 1e-4 and abs(js[0][1] - 103.90) < 1e-4
