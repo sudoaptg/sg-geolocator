@@ -72,6 +72,17 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--json-out")
     t.add_argument("--md-out")
 
+    cs = sub.add_parser("commons-search", help="List geotagged Wikimedia Commons photos in Singapore")
+    cs.add_argument("--boundary", help="Singapore boundary GeoJSON")
+    cs.add_argument("--out", default="commons.json")
+
+    cb = sub.add_parser("build-commons-shard", help="Embed one shard of the Commons photos (place recognition)")
+    cb.add_argument("--records", default="commons.json")
+    cb.add_argument("--shard", required=True, help="i/n")
+    cb.add_argument("--model", default=None, help="Default: EigenPlaces ResNet50-512")
+    cb.add_argument("--workers", type=int, default=4, help="Parallel downloads (keep low: Wikimedia rate-limits)")
+    cb.add_argument("--out", required=True)
+
     bm = sub.add_parser("build-map", help="Grid of nearby map features (OpenStreetMap + HDB block ages)")
     bm.add_argument("--out", default="mapgrid.npz")
 
@@ -151,6 +162,32 @@ def main(argv: list[str] | None = None) -> int:
             subcell_deg=args.subcell or DENSE_SUBCELL_DEG, per_subcell=args.per_subcell or DENSE_PER_SUBCELL,
             limit=args.limit,
         )
+        print(f"Shard {i}/{n}: {n_done} photos -> {args.out}")
+        return 0
+
+    if args.cmd == "commons-search":
+        from . import commons
+        from .geo import Boundary
+
+        s = commons.session()
+        found = commons.search(Boundary.from_geojson(args.boundary) if args.boundary else None, s=s)
+        recs = commons.records(found, s=s)
+        with open(args.out, "w") as fh:
+            json.dump(recs, fh)
+        print(f"{len(recs)} Commons photos -> {args.out}")
+        return 0
+
+    if args.cmd == "build-commons-shard":
+        from . import commons
+        from .dense import embed_records
+        from .embedder import EIGENPLACES, make_embedder
+
+        i, n = (int(x) for x in args.shard.split("/"))
+        with open(args.records) as fh:
+            recs = json.load(fh)[i::n]
+        print(f"Shard {i}/{n}: {len(recs)} Commons photos")
+        n_done = embed_records(recs, make_embedder(args.model or EIGENPLACES), args.out, offset=1000 + i,
+                               batch_size=32, workers=args.workers, session=commons.session(args.workers))
         print(f"Shard {i}/{n}: {n_done} photos -> {args.out}")
         return 0
 
