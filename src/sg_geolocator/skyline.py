@@ -27,7 +27,17 @@ MIN_DIST_M = 20.0  # ignore the building the photo is taken from
 AZ_BINS = 360
 PITCH_RANGE_DEG = np.arange(-15, 16, 1.0)
 HEADINGS_DEG = np.arange(0, 360, 2.0)
-TAU_DEG = 1.5  # a profile error of this many degrees costs one log unit
+TAU_DEG = 0.25  # a profile error of this many degrees costs one log unit
+# Weight of the map-match / area score next to the skyline. Small: in the one elevated test
+# photo with a known location, the area guess was 5 km off while the skyline near the true
+# spot beat all of 300 random spots. Set by hand on that single example, not validated.
+PRIOR_WEIGHT = 0.05
+# Only trust the skyline when its best match clearly beats a typical spot (otherwise, e.g.
+# street-level photos with trees, every place matches about equally badly).
+DISTINCT_RATIO = 0.8
+REFINE_TOP = 10
+REFINE_RADIUS_M = 250.0
+REFINE_STEP_M = 50.0
 MIN_VALID_COLUMNS = 0.25  # share of photo columns with a usable skyline
 
 
@@ -175,27 +185,48 @@ def match_cost(profile: np.ndarray, az: np.ndarray, el: np.ndarray) -> float:
     return float(costs.min())
 
 
-def rerank(buildings: Buildings, candidates: np.ndarray, scores: np.ndarray, photo) -> tuple[np.ndarray, list[float]] | None:
-    """Add a skyline term to candidate scores. `candidates` is (n, 2) lat/lon. Returns the
-    new scores and each candidate's best skyline error, or None if the photo has no
-    usable skyline."""
+def _best_cost(buildings: Buildings, lat: float, lon: float, az, el, min_points: int = 50) -> float | None:
+    rel, hs = buildings.near(lat, lon)
+    if len(hs) < min_points:
+        return None
+    return min(match_cost(render(rel, hs, eye), az, el) for eye in EYE_HEIGHTS_M)
+
+
+def search(buildings: Buildings, candidates: np.ndarray, prior: np.ndarray, photo) -> dict | None:
+    """Skyline search over candidate areas (one per block, island-wide), then a 50 m grid
+    around the best few. Returns the best spot, or None if the photo has no usable skyline
+    or no spot matches clearly better than a typical one."""
     sky = photo if isinstance(photo, tuple) else photo_skyline(photo)
     if sky is None:
         return None
     az, el = sky
-    costs = []
-    for lat, lon in candidates:
-        rel, hs = buildings.near(lat, lon)
-        if len(hs) == 0:
-            costs.append(float("inf"))
-            continue
-        costs.append(min(match_cost(render(rel, hs, eye), az, el) for eye in EYE_HEIGHTS_M))
-    costs = np.array(costs)
-    finite = np.isfinite(costs)
-    if not finite.any():
+    prior = np.asarray(prior, dtype=float)
+    prior = prior - prior.max()
+    costs = np.array([_best_cost(buildings, la, lo, az, el) or np.nan for la, lo in candidates])
+    ok = np.isfinite(costs)
+    if ok.sum() < 10:
         return None
-    costs[~finite] = costs[finite].max()
-    return scores - costs / TAU_DEG, costs.tolist()
+    combined = np.where(ok, -costs / TAU_DEG + PRIOR_WEIGHT * prior, -np.inf)
+    best = None
+    step = REFINE_STEP_M / M_PER_DEG
+    k = int(REFINE_RADIUS_M / REFINE_STEP_M)
+    for i in np.argsort(-combined)[:REFINE_TOP]:
+        la0, lo0 = candidates[i]
+        for di in range(-k, k + 1):
+            for dj in range(-k, k + 1):
+                if di * di + dj * dj > k * k:
+                    continue
+                la, lo = la0 + di * step, lo0 + dj * step / COS_LAT
+                cost = _best_cost(buildings, la, lo, az, el)
+                if cost is None:
+                    continue
+                value = -cost / TAU_DEG + PRIOR_WEIGHT * prior[i]
+                if best is None or value > best[0]:
+                    best = (value, la, lo, cost)
+    median = float(np.nanmedian(costs))
+    if best is None or best[3] > DISTINCT_RATIO * median:
+        return None
+    return {"lat": best[1], "lon": best[2], "cost": best[3], "median_cost": median, "n": int(ok.sum())}
 
 
 def check(buildings: Buildings, photo, lat: float, lon: float, radius_m: float = 300.0, n_random: int = 300,
@@ -209,10 +240,7 @@ def check(buildings: Buildings, photo, lat: float, lon: float, radius_m: float =
     az, el = sky
 
     def best(la, lo):
-        rel, hs = buildings.near(la, lo)
-        if len(hs) < 50:
-            return None
-        return min(match_cost(render(rel, hs, eye), az, el) for eye in EYE_HEIGHTS_M)
+        return _best_cost(buildings, la, lo, az, el)
 
     step = 40.0 / M_PER_DEG
     k = int(radius_m / 40)
