@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.11"
       # Unit tests don't touch the model, so skip installing torch/transformers.
-      - run: pip install pillow numpy requests pytest
+      - run: pip install pillow numpy requests pytest osmium
       - run: PYTHONPATH=src pytest -q
 
   # Loads the real CLIP model so library API changes surface here, not an hour into an index build.

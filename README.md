@@ -25,12 +25,22 @@ The pipeline runs these stages and returns the most confident answer:
    Mapillary capture sessions (190k-photo index) that happens for ~19% of photos, and those
    answers are within 50 m 88% of the time and within 1 km 95% of the time; other photos
    fall back to the area guess. Built by the **Build place index** workflow (20 parallel
-   jobs; only descriptors are kept).
+   jobs; only descriptors are kept). The **Add Commons photos** workflow adds geotagged
+   [Wikimedia Commons](https://commons.wikimedia.org/) photos (schools, MRT stations,
+   views from flats), which are taken from viewpoints the car-based Mapillary photos miss.
 4. **Landmark recognition (zero-shot):** a CLIP model scores the image against text prompts for
    well-known Singapore landmarks (`src/sg_geolocator/data/landmarks.json`). A confident match
    gives a precise coordinate.
-5. **Area guess:** StreetCLIP plus a trained area classifier for photos with no readable
-   text and no close match (median ~6 km).
+5. **Area guess + map matching:** StreetCLIP plus a trained area classifier gives a
+   km-level guess (median ~6 km). The map matcher then predicts from the photo which
+   things are within a short walk (school, sports pitch, multi-storey carpark, MRT
+   track, expressway, canal, mall, HDB blocks by era, landed houses, ...) and scores every
+   ~55 m spot of Singapore by how well [OpenStreetMap](https://www.openstreetmap.org/copyright)
+   and HDB's block data (data.gov.sg) agree there. Built by the **Build map matcher**
+   workflow, which reports how much it improves on the area guess alone.
+   For elevated views (photos from a flat), an experimental **skyline** step re-ranks the
+   best candidate spots by comparing the outline of surrounding blocks with one rendered
+   from building footprints and heights.
 6. **Visual retrieval:** the image is embedded with CLIP and compared against a gallery of
    geotagged reference photos you build yourself. The location is a similarity-weighted average of
    the top-k neighbours' coordinates. This handles ordinary streets, HDB estates, parks and so on,
@@ -111,8 +121,11 @@ are published, not the photos themselves.
 
 - [x] Collect a reference gallery from Mapillary (GitHub Actions workflow)
 - [x] Evaluation: median error (km) and accuracy within 0.5 / 1 / 5 / 10 km
+- [x] Map matching: scene features vs OpenStreetMap / HDB data
+- [x] Wikimedia Commons photos as extra place references
+- [ ] Skyline matching: evaluate on geotagged elevated photos
 - [ ] Map predictions to URA planning areas using official boundary GeoJSON
-- [ ] OCR stage for signage (street names, MRT station names, block numbers)
+- [x] OCR stage for signage (street names, MRT station names, block numbers)
 - [ ] Fine-tune CLIP on Singapore imagery (geo-cell classification)
 - [ ] Simple web UI showing the prediction on a map
 

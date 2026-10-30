@@ -1,0 +1,135 @@
+name: Add Commons photos to the place index
+
+# Geotagged Wikimedia Commons photos of Singapore (buildings, schools, MRT stations, views
+# from flats) embedded with EigenPlaces and merged into the latest dense place index, so a
+# photo of a building can match someone else's photo of the same building.
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: "Parallel embedding jobs"
+        default: "8"
+      places_tag:
+        description: "Release with the Mapillary places.npz to merge into"
+        default: "places-eigenplaces-20261029-1732"
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+  MODEL: eigenplaces/ResNet50/512
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      shards: ${{ steps.s.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - name: Download Singapore boundary
+        run: |
+          url=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
+                | python -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])")
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "$url" -o sg_boundary.geojson
+      - name: Find geotagged Commons photos
+        run: |
+          sg-geolocate commons-search --boundary sg_boundary.geojson --out commons.json
+          echo "::notice::$(python -c "import json; print(len(json.load(open('commons.json'))))") Commons photos"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: commons-records
+          path: commons.json
+          retention-days: 3
+      - id: s
+        run: python -c "print('list=' + str(list(range(int('${{ inputs.shards }}')))))" >> "$GITHUB_OUTPUT"
+
+  embed:
+    needs: search
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.search.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install (CPU-only torch)
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch
+          key: torch-hub-${{ env.MODEL }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: commons-records
+      - name: Embed shard ${{ matrix.shard }}
+        run: |
+          sg-geolocate build-commons-shard --records commons.json --shard ${{ matrix.shard }}/${{ inputs.shards }} \
+            --model "$MODEL" --out commons-part-${{ matrix.shard }}.npz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: commons-part-${{ matrix.shard }}
+          path: commons-part-${{ matrix.shard }}.npz
+          retention-days: 3
+
+  finalize:
+    needs: embed
+    if: ${{ !cancelled() }}  # a failed shard shouldn't throw away the others
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: commons-part-*
+          merge-multiple: true
+      - name: Download Mapillary place index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ inputs.places_tag }}" --pattern places.npz --output mapillary-places.npz
+      - name: Merge and evaluate
+        run: |
+          sg-geolocate merge-index commons-part-*.npz --out commons.npz
+          sg-geolocate merge-index mapillary-places.npz commons.npz --out places.npz
+          ls -lh commons.npz places.npz
+          sg-geolocate evaluate commons.npz --radius 0.1 --no-geocell --md-out eval-commons.md
+          sg-geolocate evaluate places.npz --radius 0.1 --max-test 3000 --no-geocell --json-out eval.json --md-out eval.md
+          {
+            echo "# Commons photos only (held out by uploader)"; cat eval-commons.md
+            echo; echo "# Mapillary + Commons"; cat eval.md
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="places-eigenplaces-commons-$(date -u +%Y%m%d-%H%M)"
+          {
+            echo "Dense place index: Mapillary (\`${{ inputs.places_tag }}\`) plus geotagged Wikimedia Commons photos,"
+            echo "embedded with \`$MODEL\`."
+            echo
+            echo "## Commons photos only (held out by uploader)"; cat eval-commons.md
+            echo; echo "## Mapillary + Commons"; cat eval.md
+            echo
+            echo "Reference imagery © Mapillary contributors (CC BY-SA 4.0) and Wikimedia Commons contributors"
+            echo "(free licences, see each file page; ids are kept as commons:<pageid>). Only descriptors and ids are published."
+          } > notes.md
+          gh release create "$tag" places.npz commons.npz eval.json --title "$tag" --notes-file notes.md

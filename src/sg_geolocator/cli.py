@@ -19,6 +19,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-text", action="store_true", help="Skip reading signs/text in the photo")
     p.add_argument("--geocell", help="Area classifier (.npz) from train-geocell")
     p.add_argument("--places", help="Dense place-recognition index (.npz) for exact-spot matching")
+    p.add_argument("--map", help="Map matcher (.npz) from train-map: compares the scene with map features")
+    p.add_argument("--buildings", help="Building heights (.npz) from build-buildings: skyline matching (with --map)")
 
     f = sub.add_parser("fetch-mapillary", help="Download reference photos from Mapillary")
     f.add_argument("--out", default="data/mapillary")
@@ -71,13 +73,38 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--json-out")
     t.add_argument("--md-out")
 
+    cs = sub.add_parser("commons-search", help="List geotagged Wikimedia Commons photos in Singapore")
+    cs.add_argument("--boundary", help="Singapore boundary GeoJSON")
+    cs.add_argument("--out", default="commons.json")
+
+    cb = sub.add_parser("build-commons-shard", help="Embed one shard of the Commons photos (place recognition)")
+    cb.add_argument("--records", default="commons.json")
+    cb.add_argument("--shard", required=True, help="i/n")
+    cb.add_argument("--model", default=None, help="Default: EigenPlaces ResNet50-512")
+    cb.add_argument("--workers", type=int, default=4, help="Parallel downloads (keep low: Wikimedia rate-limits)")
+    cb.add_argument("--out", required=True)
+
+    bm = sub.add_parser("build-map", help="Grid of nearby map features (OpenStreetMap + HDB block ages)")
+    bm.add_argument("--out", default="mapgrid.npz")
+
+    bb = sub.add_parser("build-buildings", help="Building footprints with heights, for skyline matching")
+    bb.add_argument("--out", default="buildings.npz")
+
+    tm = sub.add_parser("train-map", help="Train and evaluate the map matcher on an index (StreetCLIP)")
+    tm.add_argument("index")
+    tm.add_argument("--grid", default="mapgrid.npz")
+    tm.add_argument("--out", default="mapmatch.npz")
+    tm.add_argument("--json-out")
+    tm.add_argument("--md-out")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "predict":
         from .pipeline import Geolocator
 
         geo = Geolocator(index_path=args.index, use_exif=not args.no_exif, use_text=not args.no_text,
-                         geocell_path=args.geocell, places_path=args.places)
+                         geocell_path=args.geocell, places_path=args.places, map_path=args.map,
+                         buildings_path=args.buildings)
         for img in args.images:
             pred = geo.predict(img)
             print(json.dumps({"image": img, **(pred.as_dict() if pred else {"error": "no prediction"})}))
@@ -141,6 +168,64 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
         )
         print(f"Shard {i}/{n}: {n_done} photos -> {args.out}")
+        return 0
+
+    if args.cmd == "commons-search":
+        from . import commons
+        from .geo import Boundary
+
+        s = commons.session()
+        found = commons.search(Boundary.from_geojson(args.boundary) if args.boundary else None, s=s)
+        recs = commons.records(found, s=s)
+        with open(args.out, "w") as fh:
+            json.dump(recs, fh)
+        print(f"{len(recs)} Commons photos -> {args.out}")
+        return 0
+
+    if args.cmd == "build-commons-shard":
+        from . import commons
+        from .dense import embed_records
+        from .embedder import EIGENPLACES, make_embedder
+
+        i, n = (int(x) for x in args.shard.split("/"))
+        with open(args.records) as fh:
+            recs = json.load(fh)[i::n]
+        print(f"Shard {i}/{n}: {len(recs)} Commons photos")
+        n_done = embed_records(recs, make_embedder(args.model or EIGENPLACES), args.out, offset=1000 + i,
+                               batch_size=32, workers=args.workers, session=commons.session(args.workers))
+        print(f"Shard {i}/{n}: {n_done} photos -> {args.out}")
+        return 0
+
+    if args.cmd == "build-map":
+        from .mapmatch import MapGrid
+        from .roads import Roads
+
+        grid = MapGrid.build(Roads.load(log=print), log=print)
+        grid.save(args.out)
+        print(f"Map grid {grid.shape} with {len(grid.names)} features -> {args.out}")
+        return 0
+
+    if args.cmd == "build-buildings":
+        from .skyline import Buildings
+
+        b = Buildings.build(log=print)
+        b.save(args.out)
+        print(f"{len(b.heights)} footprint points with heights -> {args.out}")
+        return 0
+
+    if args.cmd == "train-map":
+        from .mapmatch import MapGrid, report_markdown, train_and_evaluate
+
+        matcher, result = train_and_evaluate(args.index, MapGrid.load(args.grid), log=print)
+        matcher.save(args.out)
+        md = report_markdown(result)
+        print(md)
+        if args.json_out:
+            with open(args.json_out, "w") as fh:
+                json.dump(result, fh, indent=2)
+        if args.md_out:
+            with open(args.md_out, "w") as fh:
+                fh.write(md)
         return 0
 
     if args.cmd == "evaluate-text":

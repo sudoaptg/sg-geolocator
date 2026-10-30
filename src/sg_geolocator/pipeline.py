@@ -14,7 +14,8 @@ PLACE_RADIUS_KM = 0.1
 # 95% within 1 km; k=10 answers 30% but only 80% within 1 km. Prefer being right over
 # answering often: a wrong "exact spot" is worse than falling back to the area guess.
 PLACE_K = 50
-CLUE_THRESHOLD = 0.5  # even a road name alone usually beats the km-scale visual guess
+CLUE_THRESHOLD = 0.5
+SKYLINE_CANDIDATES = 300  # best map-match cells re-ranked by skyline  # even a road name alone usually beats the km-scale visual guess
 
 
 class Geolocator:
@@ -25,10 +26,16 @@ class Geolocator:
         use_text: bool = True,
         geocell_path: str | Path | None = None,
         places_path: str | Path | None = None,
+        map_path: str | Path | None = None,
+        buildings_path: str | Path | None = None,
     ):
         self.index_path = index_path
         self.geocell_path = geocell_path
         self.places_path = places_path
+        self.map_path = map_path
+        self.buildings_path = buildings_path
+        self._map = None
+        self._buildings = None
         self.use_exif = use_exif
         self.use_text = use_text
         self._embedder = None
@@ -60,6 +67,16 @@ class Geolocator:
         if self.places_path:
             self._places = RetrievalIndex(self.places_path)
             self._place_embedder = make_embedder(self._places.model)
+        if self.map_path:
+            from .mapmatch import MapMatcher
+
+            self._map = MapMatcher.load(self.map_path)
+            if self._geocell is not None and self._map.mu.shape != self._geocell.mu.shape:
+                raise ValueError("map matcher and area classifier were trained on different embedding models")
+        if self.buildings_path:
+            from .skyline import Buildings
+
+            self._buildings = Buildings.load(self.buildings_path)
         if self.use_text:
             from .clues import ClueLocator
 
@@ -79,6 +96,8 @@ class Geolocator:
             if match.confidence >= PLACE_THRESHOLD:
                 match.source = "place-match"
                 return match
+        if self._geocell is not None and self._map is not None and self._map.lam > 0:
+            return self._map_match(path, emb)
         if self._geocell is not None:
             (lat, lon), conf = (x[0] for x in self._geocell.predict(emb[None, :]))
             label, _ = nearest_landmark(lat, lon)
@@ -86,6 +105,32 @@ class Geolocator:
         if self._index is not None:
             return self._index.predict(emb)
         return landmark  # low-confidence landmark guess, or None
+
+    def _map_match(self, path, emb) -> Prediction:
+        """Area classifier + map features, then (for elevated views) skyline re-ranking."""
+        import numpy as np
+
+        from .mapmatch import MapGrid, describe
+
+        score = self._map.scores(emb[None, :], self._geocell)
+        (lat, lon), conf = (x[0] for x in self._map.best(score))
+        seen = describe(self._map.feature_probs(emb[None, :])[0], self._map.prior, self._map.grid.names)
+        source = "map-match"
+        if self._buildings is not None:
+            from .skyline import rerank
+
+            top = np.argsort(-score[0])[:SKYLINE_CANDIDATES]
+            r, c, _ = self._map.cells
+            cand = np.stack(MapGrid.centre(r[top], c[top]), axis=1)
+            res = rerank(self._buildings, cand, score[0, top], path)
+            if res is not None:
+                new, costs = res
+                j = int(np.argmax(new))
+                lat, lon = cand[j]
+                seen.append(f"skyline: outline matches within {costs[j]:.1f}° (best of {len(cand)} candidate spots)")
+                source = "map+skyline"
+        label, _ = nearest_landmark(lat, lon)
+        return Prediction(float(lat), float(lon), float(conf), source, f"near {label}", seen)
 
     def predict(self, path: str | Path) -> Prediction | None:
         if self.use_exif:

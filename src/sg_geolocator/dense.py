@@ -47,16 +47,31 @@ def build_dense_shard(
     if limit:
         chosen = chosen[:limit]
     log(f"Shard {shard}/{n}: embedding {len(chosen)} photos (from {len(seen)} candidates)")
+    return embed_records(chosen, embedder, out, offset=shard, batch_size=batch_size, workers=workers, log=log)
 
+
+def embed_records(
+    records: list[dict],
+    embedder,
+    out: str | Path,
+    offset: int = 0,
+    batch_size: int = 64,
+    workers: int = 16,
+    session: requests.Session | None = None,
+    log=print,
+) -> int:
+    """Download, embed and delete photos in batches; save only float16 descriptors.
+    Records need id, lat, lon, sequence, captured_at and url."""
     embs, coords, seqs, ids = [], [], [], []
-    session = requests.Session()
-    # One pooled connection per download thread (the default pool of 10 discards the rest).
-    session.mount("https://", requests.adapters.HTTPAdapter(pool_connections=workers, pool_maxsize=workers))
+    if session is None:
+        session = requests.Session()
+        # One pooled connection per download thread (the default pool of 10 discards the rest).
+        session.mount("https://", requests.adapters.HTTPAdapter(pool_connections=workers, pool_maxsize=workers))
     tmp = Path(tempfile.mkdtemp())
     try:
         with ThreadPoolExecutor(workers) as pool:
-            for start in range(0, len(chosen), batch_size):
-                recs = chosen[start : start + batch_size]
+            for start in range(0, len(records), batch_size):
+                recs = records[start : start + batch_size]
                 got = [r for r in pool.map(lambda rec: _download(session, rec, tmp), recs) if r]
                 if got:
                     embs.append(embedder.embed_images([tmp / r["path"] for r in got]).astype(np.float16))
@@ -66,12 +81,12 @@ def build_dense_shard(
                 for f in tmp.iterdir():
                     f.unlink()
                 if (start // batch_size) % 20 == 0:
-                    log(f"  {start + len(recs)}/{len(chosen)} photos")
+                    log(f"  {start + len(recs)}/{len(records)} photos ({len(ids)} downloaded)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     if not embs:
-        raise RuntimeError(f"Shard {shard}: no photos could be downloaded")
+        raise RuntimeError("No photos could be downloaded")
     np.savez(
         out,
         embeddings=np.concatenate(embs),
@@ -79,6 +94,6 @@ def build_dense_shard(
         sequences=np.asarray(seqs),
         paths=np.asarray(ids),
         model=np.asarray(embedder.model_name),
-        offset=np.asarray(shard),
+        offset=np.asarray(offset),
     )
     return len(ids)
