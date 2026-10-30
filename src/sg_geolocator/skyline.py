@@ -6,10 +6,11 @@ heights (OpenStreetMap `height` / `building:levels`, HDB storeys from data.gov.s
 candidate viewpoints and compares it with the outline found in the photo, trying every
 compass heading, a range of camera tilts and several floor heights.
 
-It only re-ranks candidates that another stage (the map matcher) already proposed: on its
-own a skyline is ambiguous across Singapore's many similar estates. It is not evaluated on
-held-out data yet (there is no set of geotagged elevated photos), so it is used only when
-the photo shows a clear skyline, and its weight is deliberately modest.
+Findings so far (one elevated night photo with a known area): the skyline near the true
+spot matched better than all of 300 random spots, but searching all ~2,000 built-up areas
+found a spot 10 km away that matched better still. So the skyline narrows things down but
+does not identify a spot on its own; it is reported as hints ("skyline also matches near
+...") and does not change the prediction.
 """
 
 from __future__ import annotations
@@ -28,13 +29,8 @@ AZ_BINS = 360
 PITCH_RANGE_DEG = np.arange(-15, 16, 1.0)
 HEADINGS_DEG = np.arange(0, 360, 2.0)
 TAU_DEG = 0.25  # a profile error of this many degrees costs one log unit
-# Weight of the map-match / area score next to the skyline. Small: in the one elevated test
-# photo with a known location, the area guess was 5 km off while the skyline near the true
-# spot beat all of 300 random spots. Set by hand on that single example, not validated.
+# Weight of the map-match / area score next to the skyline when ranking skyline spots.
 PRIOR_WEIGHT = 0.05
-# Only trust the skyline when its best match clearly beats a typical spot (otherwise, e.g.
-# street-level photos with trees, every place matches about equally badly).
-DISTINCT_RATIO = 0.8
 REFINE_TOP = 10
 REFINE_RADIUS_M = 250.0
 REFINE_STEP_M = 50.0
@@ -192,10 +188,10 @@ def _best_cost(buildings: Buildings, lat: float, lon: float, az, el, min_points:
     return min(match_cost(render(rel, hs, eye), az, el) for eye in EYE_HEIGHTS_M)
 
 
-def search(buildings: Buildings, candidates: np.ndarray, prior: np.ndarray, photo) -> dict | None:
-    """Skyline search over candidate areas (one per block, island-wide), then a 50 m grid
-    around the best few. Returns the best spot, or None if the photo has no usable skyline
-    or no spot matches clearly better than a typical one."""
+def search(buildings: Buildings, candidates: np.ndarray, prior: np.ndarray, photo, top: int = 5) -> dict | None:
+    """Skyline search over candidate areas (one per block, island-wide), refined on a 50 m
+    grid around the best few. Returns the best few spots and how they compare with a
+    typical spot, or None if the photo has no usable skyline."""
     sky = photo if isinstance(photo, tuple) else photo_skyline(photo)
     if sky is None:
         return None
@@ -207,26 +203,25 @@ def search(buildings: Buildings, candidates: np.ndarray, prior: np.ndarray, phot
     if ok.sum() < 10:
         return None
     combined = np.where(ok, -costs / TAU_DEG + PRIOR_WEIGHT * prior, -np.inf)
-    best = None
     step = REFINE_STEP_M / M_PER_DEG
     k = int(REFINE_RADIUS_M / REFINE_STEP_M)
+    spots = []
     for i in np.argsort(-combined)[:REFINE_TOP]:
         la0, lo0 = candidates[i]
+        best = None
         for di in range(-k, k + 1):
             for dj in range(-k, k + 1):
                 if di * di + dj * dj > k * k:
                     continue
                 la, lo = la0 + di * step, lo0 + dj * step / COS_LAT
                 cost = _best_cost(buildings, la, lo, az, el)
-                if cost is None:
-                    continue
-                value = -cost / TAU_DEG + PRIOR_WEIGHT * prior[i]
-                if best is None or value > best[0]:
-                    best = (value, la, lo, cost)
-    median = float(np.nanmedian(costs))
-    if best is None or best[3] > DISTINCT_RATIO * median:
-        return None
-    return {"lat": best[1], "lon": best[2], "cost": best[3], "median_cost": median, "n": int(ok.sum())}
+                if cost is not None and (best is None or cost < best[2]):
+                    best = (la, lo, cost)
+        if best:
+            spots.append({"lat": best[0], "lon": best[1], "cost": best[2],
+                          "value": -best[2] / TAU_DEG + PRIOR_WEIGHT * prior[i]})
+    spots.sort(key=lambda x: -x["value"])
+    return {"spots": spots[:top], "median_cost": float(np.nanmedian(costs)), "n": int(ok.sum())}
 
 
 def check(buildings: Buildings, photo, lat: float, lon: float, radius_m: float = 300.0, n_random: int = 300,
