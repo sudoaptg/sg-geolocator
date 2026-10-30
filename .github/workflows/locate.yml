@@ -77,6 +77,8 @@ jobs:
           print("| photo | guess | how | confidence | evidence | actual (photo's GPS) |")
           print("|---|---|---|---|---|---|")
           for line in open("results.jsonl"):
+              if not line.startswith("{"):  # stray library output on stdout
+                  continue
               r = json.loads(line)
               if "error" in r:
                   print(f"| {r['image']} | – | {r['error']} | | | |")
@@ -93,6 +95,7 @@ jobs:
           PY
           cat results.jsonl
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: locations
           path: results.jsonl
