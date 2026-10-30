@@ -6,6 +6,10 @@ on:
   push:
     paths: ["photos/**"]
   workflow_dispatch:
+    inputs:
+      check_at:
+        description: "Optional lat,lon where the photo was really taken: also report how well the skyline matches there vs random spots"
+        default: ""
 
 permissions:
   contents: read
@@ -98,6 +102,14 @@ jobs:
                 "looks (km-level).")
           PY
           cat results.jsonl
+      - name: Skyline check against the known location
+        if: ${{ inputs.check_at != '' }}
+        run: |
+          shopt -s nullglob nocaseglob
+          for f in photos/*.jpg photos/*.jpeg photos/*.png; do
+            sg-geolocate skyline-check "$f" --at "${{ inputs.check_at }}" --buildings buildings.npz --radius 600 | tee -a check.jsonl
+          done
+          { echo; echo "### Skyline check at ${{ inputs.check_at }}"; echo '```'; cat check.jsonl; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

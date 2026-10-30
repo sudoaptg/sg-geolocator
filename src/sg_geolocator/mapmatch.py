@@ -339,6 +339,16 @@ class MapMatcher:
         return cls(grid, d["W"], d["b"], d["mu"], d["sd"], d["prior"], float(d["lam"]), float(d["alpha"]))
 
 
+def spread_candidates(score: np.ndarray, r: np.ndarray, c: np.ndarray, n: int, block_deg: float) -> np.ndarray:
+    """Indices of the best cell in each of the `n` best-scoring blocks, so candidates cover
+    every plausible area instead of crowding around the single best one."""
+    per = max(1, int(round(block_deg / STEP)))
+    order = np.argsort(-score)
+    blocks = (r[order] // per) * 100_000 + c[order] // per
+    _, first = np.unique(blocks, return_index=True)  # first occurrence = best cell of the block
+    return order[np.sort(first)][:n]
+
+
 def _sigmoid(z):
     return 1 / (1 + np.exp(-z))
 
