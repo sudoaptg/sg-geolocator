@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
 
 import numpy as np
 import requests
@@ -64,17 +65,24 @@ STREET_ABBR = {
 }
 
 
-def _overpass(query: str, log=print) -> dict:
+def _overpass(query: str, log=print, rounds: int = 4) -> dict:
+    """Try each public server in turn, a few rounds with growing pauses: they often answer
+    502/504 when busy and recover within minutes."""
     errors = []
-    for url in OVERPASS_URLS:
-        try:
-            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=900)
-            r.raise_for_status()
-            return r.json()
-        except (requests.RequestException, ValueError) as exc:
-            errors.append(f"{url}: {exc}")
-            log(f"  {errors[-1]}")
-    raise RuntimeError("Overpass failed: " + "; ".join(errors))
+    for attempt in range(rounds):
+        if attempt:
+            wait = 60 * attempt
+            log(f"  all Overpass servers failed; retrying in {wait}s")
+            time.sleep(wait)
+        for url in OVERPASS_URLS:
+            try:
+                r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=900)
+                r.raise_for_status()
+                return r.json()
+            except (requests.RequestException, ValueError) as exc:
+                errors.append(f"{url}: {exc}")
+                log(f"  {errors[-1]}")
+    raise RuntimeError("Overpass failed: " + "; ".join(errors[-len(OVERPASS_URLS):]))
 
 
 def _query(statements: str, out: str = "geom") -> str:
