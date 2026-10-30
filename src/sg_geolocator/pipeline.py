@@ -25,10 +25,13 @@ class Geolocator:
         use_text: bool = True,
         geocell_path: str | Path | None = None,
         places_path: str | Path | None = None,
+        map_path: str | Path | None = None,
     ):
         self.index_path = index_path
         self.geocell_path = geocell_path
         self.places_path = places_path
+        self.map_path = map_path
+        self._map = None
         self.use_exif = use_exif
         self.use_text = use_text
         self._embedder = None
@@ -60,6 +63,12 @@ class Geolocator:
         if self.places_path:
             self._places = RetrievalIndex(self.places_path)
             self._place_embedder = make_embedder(self._places.model)
+        if self.map_path:
+            from .mapmatch import MapMatcher
+
+            self._map = MapMatcher.load(self.map_path)
+            if self._geocell is not None and self._map.mu.shape != self._geocell.mu.shape:
+                raise ValueError("map matcher and area classifier were trained on different embedding models")
         if self.use_text:
             from .clues import ClueLocator
 
@@ -79,6 +88,13 @@ class Geolocator:
             if match.confidence >= PLACE_THRESHOLD:
                 match.source = "place-match"
                 return match
+        if self._geocell is not None and self._map is not None and self._map.lam > 0:
+            from .mapmatch import describe
+
+            (lat, lon), conf = (x[0] for x in self._map.locate(emb[None, :], self._geocell))
+            label, _ = nearest_landmark(lat, lon)
+            seen = describe(self._map.feature_probs(emb[None, :])[0], self._map.prior, self._map.grid.names)
+            return Prediction(float(lat), float(lon), float(conf), "map-match", f"near {label}", seen)
         if self._geocell is not None:
             (lat, lon), conf = (x[0] for x in self._geocell.predict(emb[None, :]))
             label, _ = nearest_landmark(lat, lon)

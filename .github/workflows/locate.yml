@@ -32,12 +32,12 @@ jobs:
           python - <<'PY'
           import json, subprocess
           tags = json.loads(subprocess.check_output(["gh", "release", "list", "--limit", "30", "--json", "tagName"]))
-          want = {"index.npz", "places.npz"}
+          want = {"index.npz", "places.npz", "mapmatch.npz"}
           for t in (x["tagName"] for x in tags):  # newest first
               assets = {a["name"] for a in json.loads(subprocess.check_output(
                   ["gh", "release", "view", t, "--json", "assets"]))["assets"]}
               for name in sorted(want & assets):
-                  pats = ["index.npz", "geocell.npz"] if name == "index.npz" else ["places.npz"]
+                  pats = ["index.npz", "geocell.npz"] if name == "index.npz" else [name]
                   for pat in pats:
                       if pat in assets:
                           subprocess.check_call(["gh", "release", "download", t, "--pattern", pat])
@@ -68,6 +68,7 @@ jobs:
           if [ ${#files[@]} -eq 0 ]; then echo "No photos in photos/"; exit 0; fi
           extra=""; [ -f geocell.npz ] && extra="--geocell geocell.npz"
           [ -f places.npz ] && extra="$extra --places places.npz"
+          [ -f mapmatch.npz ] && extra="$extra --map mapmatch.npz"
           sg-geolocate predict "${files[@]}" --index index.npz $extra --no-exif > results.jsonl
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
@@ -90,7 +91,8 @@ jobs:
               print(f"| {r['image']} | {where} | {r['source']} | {r['confidence']:.0%} | {ev} | {truth} |")
           print("\nGuesses ignore any GPS stored in the photo; it is only used to show the error. "
                 "`text` = read from signs; `place-match` = matched to reference photos of the same "
-                "spot (tens of metres); `landmark`, `geocell` and `retrieval` = from how the scene "
+                "spot (tens of metres); `map-match` = scene compared with map features (school, carpark, "
+                "HDB era...) within the area guess; `landmark`, `geocell` and `retrieval` = from how the scene "
                 "looks (km-level).")
           PY
           cat results.jsonl

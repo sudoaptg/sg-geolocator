@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-text", action="store_true", help="Skip reading signs/text in the photo")
     p.add_argument("--geocell", help="Area classifier (.npz) from train-geocell")
     p.add_argument("--places", help="Dense place-recognition index (.npz) for exact-spot matching")
+    p.add_argument("--map", help="Map matcher (.npz) from train-map: compares the scene with map features")
 
     f = sub.add_parser("fetch-mapillary", help="Download reference photos from Mapillary")
     f.add_argument("--out", default="data/mapillary")
@@ -71,13 +72,23 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--json-out")
     t.add_argument("--md-out")
 
+    bm = sub.add_parser("build-map", help="Grid of nearby map features (OpenStreetMap + HDB block ages)")
+    bm.add_argument("--out", default="mapgrid.npz")
+
+    tm = sub.add_parser("train-map", help="Train and evaluate the map matcher on an index (StreetCLIP)")
+    tm.add_argument("index")
+    tm.add_argument("--grid", default="mapgrid.npz")
+    tm.add_argument("--out", default="mapmatch.npz")
+    tm.add_argument("--json-out")
+    tm.add_argument("--md-out")
+
     args = parser.parse_args(argv)
 
     if args.cmd == "predict":
         from .pipeline import Geolocator
 
         geo = Geolocator(index_path=args.index, use_exif=not args.no_exif, use_text=not args.no_text,
-                         geocell_path=args.geocell, places_path=args.places)
+                         geocell_path=args.geocell, places_path=args.places, map_path=args.map)
         for img in args.images:
             pred = geo.predict(img)
             print(json.dumps({"image": img, **(pred.as_dict() if pred else {"error": "no prediction"})}))
@@ -141,6 +152,30 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
         )
         print(f"Shard {i}/{n}: {n_done} photos -> {args.out}")
+        return 0
+
+    if args.cmd == "build-map":
+        from .mapmatch import MapGrid
+        from .roads import Roads
+
+        grid = MapGrid.build(Roads.load(log=print), log=print)
+        grid.save(args.out)
+        print(f"Map grid {grid.shape} with {len(grid.names)} features -> {args.out}")
+        return 0
+
+    if args.cmd == "train-map":
+        from .mapmatch import MapGrid, report_markdown, train_and_evaluate
+
+        matcher, result = train_and_evaluate(args.index, MapGrid.load(args.grid), log=print)
+        matcher.save(args.out)
+        md = report_markdown(result)
+        print(md)
+        if args.json_out:
+            with open(args.json_out, "w") as fh:
+                json.dump(result, fh, indent=2)
+        if args.md_out:
+            with open(args.md_out, "w") as fh:
+                fh.write(md)
         return 0
 
     if args.cmd == "evaluate-text":

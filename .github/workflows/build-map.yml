@@ -1,0 +1,63 @@
+name: Build map matcher
+
+# Compares what a photo shows (school, sports field, carpark, MRT track, HDB era, ...) with
+# what OpenStreetMap and HDB's block data say is at each ~55 m spot of Singapore. Trains on
+# the StreetCLIP reference index (no photo downloads), evaluates on held-out capture
+# sessions and publishes mapmatch.npz.
+on:
+  workflow_dispatch:
+    inputs:
+      index_tag:
+        description: "Release with the StreetCLIP index.npz"
+        default: "index-streetclip-20261029-1318"
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - name: Download index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ inputs.index_tag }}" --pattern index.npz
+      - name: Cache gazetteers (OSM roads)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sg_geolocator
+          key: sg-gazetteers-v1-${{ github.run_id }}
+          restore-keys: sg-gazetteers-v1-
+      - name: Build map grid (OpenStreetMap + HDB block ages)
+        run: sg-geolocate build-map --out mapgrid.npz
+      - name: Train and evaluate
+        run: |
+          sg-geolocate train-map index.npz --grid mapgrid.npz --out mapmatch.npz --json-out eval.json --md-out eval.md
+          cat eval.md >> "$GITHUB_STEP_SUMMARY"
+          ls -lh mapmatch.npz
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="map-$(date -u +%Y%m%d-%H%M)"
+          {
+            echo "Map matcher trained on \`${{ inputs.index_tag }}\` embeddings. Use with"
+            echo "\`sg-geolocate predict photo.jpg --index index.npz --geocell geocell.npz --map mapmatch.npz\`."
+            echo
+            cat eval.md
+            echo
+            echo "Map data © OpenStreetMap contributors (ODbL). HDB block ages: HDB Property Information,"
+            echo "data.gov.sg (Singapore Open Data Licence)."
+          } > notes.md
+          gh release create "$tag" mapmatch.npz eval.json --title "$tag" --notes-file notes.md
