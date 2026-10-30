@@ -107,7 +107,7 @@ class Geolocator:
         return landmark  # low-confidence landmark guess, or None
 
     def _map_match(self, path, emb) -> Prediction:
-        """Area classifier + map features; for photos with a distinctive skyline, skyline search."""
+        """Area classifier + map features; skyline matches are added as hints."""
         import numpy as np
 
         from .mapmatch import MapGrid, describe, spread_candidates
@@ -115,7 +115,6 @@ class Geolocator:
         score = self._map.scores(emb[None, :], self._geocell)
         (lat, lon), conf = (x[0] for x in self._map.best(score))
         seen = describe(self._map.feature_probs(emb[None, :])[0], self._map.prior, self._map.grid.names)
-        source = "map-match"
         if self._buildings is not None:
             from .skyline import search
 
@@ -123,13 +122,13 @@ class Geolocator:
             top = spread_candidates(score[0], r, c, len(r), SKYLINE_BLOCK_DEG)
             cand = np.stack(MapGrid.centre(r[top], c[top]), axis=1)
             found = search(self._buildings, cand, score[0, top], path)
-            if found is not None:
-                lat, lon = found["lat"], found["lon"]
-                seen.append(f"skyline: outline matches within {found['cost']:.2f}° (typical spot: "
-                            f"{found['median_cost']:.2f}°, {found['n']} areas compared)")
-                source = "skyline"
+            if found is not None:  # hints only: the skyline alone picked wrong estates in testing
+                for spot in found["spots"][:3]:
+                    near, _ = nearest_landmark(spot["lat"], spot["lon"])
+                    seen.append(f"skyline also matches near {spot['lat']:.4f}, {spot['lon']:.4f} ({near}): "
+                                f"{spot['cost']:.2f}° vs typical {found['median_cost']:.2f}°")
         label, _ = nearest_landmark(lat, lon)
-        return Prediction(float(lat), float(lon), float(conf), source, f"near {label}", seen)
+        return Prediction(float(lat), float(lon), float(conf), "map-match", f"near {label}", seen)
 
     def predict(self, path: str | Path) -> Prediction | None:
         if self.use_exif:

@@ -38,9 +38,13 @@ The pipeline runs these stages and returns the most confident answer:
    ~55 m spot of Singapore by how well [OpenStreetMap](https://www.openstreetmap.org/copyright)
    and HDB's block data (data.gov.sg) agree there. Built by the **Build map matcher**
    workflow, which reports how much it improves on the area guess alone.
-   For elevated views (photos from a flat), an experimental **skyline** step re-ranks the
-   best candidate spots by comparing the outline of surrounding blocks with one rendered
-   from building footprints and heights.
+   On held-out photos this improves within-1 km from 14% to 18%; the median error is
+   unchanged (~5.8 km).
+   For elevated views (photos from a flat), an experimental **skyline** step compares the
+   outline of surrounding blocks with ones rendered from building footprints and heights
+   and lists the best-matching areas as hints. In testing it ranked the true area above
+   300 random spots but not above every estate in Singapore, so it does not change the
+   guess.
 6. **Visual retrieval:** the image is embedded with CLIP and compared against a gallery of
    geotagged reference photos you build yourself. The location is a similarity-weighted average of
    the top-k neighbours' coordinates. This handles ordinary streets, HDB estates, parks and so on,

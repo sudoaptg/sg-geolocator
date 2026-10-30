@@ -43,8 +43,8 @@ def test_skyline_matches_true_spot_better(tmp_path):
     grid = np.array([(1.35 + i * 0.003, 103.80 + j * 0.003) for i in range(-3, 4) for j in range(-3, 4)])
     prior = -np.hypot(grid[:, 0] - 1.356, grid[:, 1] - 103.806) * 100  # area guess favours another spot
     found = search(b, grid, prior, sky)
-    assert found is not None
-    assert abs(found["lat"] - 1.35) < 0.001 and abs(found["lon"] - 103.80) < 0.001
+    best = found["spots"][0]
+    assert abs(best["lat"] - 1.35) < 0.001 and abs(best["lon"] - 103.80) < 0.001
 
 
 def test_no_skyline_when_frame_blocks_the_sky(tmp_path):
