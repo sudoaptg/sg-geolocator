@@ -28,19 +28,19 @@ jobs:
         with:
           python-version: "3.11"
       - run: |
-          pip install numpy pillow requests
+          pip install numpy pillow requests osmium
           pip install -e . --no-deps
       - name: Download index
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "${{ inputs.index_tag }}" --pattern index.npz
-      - name: Cache gazetteers (OSM roads)
+      - name: Cache gazetteers (OSM roads, parsed OSM features, HDB data)
         uses: actions/cache@v4
         with:
           path: ~/.cache/sg_geolocator
           key: sg-gazetteers-v1-${{ github.run_id }}
           restore-keys: sg-gazetteers-v1-
-      - name: Build map grid (OpenStreetMap + HDB block ages)
+      - name: Build map grid (OpenStreetMap extract + HDB block ages)
         run: sg-geolocate build-map --out mapgrid.npz
       - name: Building heights for skyline matching
         continue-on-error: true  # optional: the map matcher works without it

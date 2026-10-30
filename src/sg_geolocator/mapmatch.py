@@ -5,7 +5,8 @@ blocks" thinks: where does that combination exist? This module does the same:
 
 1. `MapGrid`: Singapore cut into ~55 m cells; for each cell, which features are within a
    short walk (school, sports pitch, multi-storey carpark, MRT track, expressway, canal,
-   mall, HDB blocks of each era, landed houses, ...). Built from OpenStreetMap (ODbL) and
+   mall, HDB blocks of each era, landed houses, ...). Built from OpenStreetMap (ODbL, via
+   Geofabrik's extract) and
    HDB's property dataset (data.gov.sg, Singapore Open Data Licence) for block ages.
 2. `MapMatcher`: logistic regressions that predict, from the photo's StreetCLIP embedding,
    which features are nearby. They are trained on the reference index, whose photos have
@@ -19,35 +20,22 @@ from __future__ import annotations
 
 import gzip
 import json
-import time
 
 import numpy as np
 import requests
 
-from .roads import CACHE_PATH, HEADERS, OVERPASS_URLS
+from .roads import CACHE_PATH, HEADERS
 
 STEP = 0.0005  # grid cell, degrees (~55 m)
 BOUNDS = (1.15, 103.59, 1.48, 104.10)  # lat_min, lon_min, lat_max, lon_max
 M_PER_DEG = 111_000.0
 
-# (name, Overpass statements, radius in metres). Area features are filled, others are points.
+# (name, radius in metres); the tag tests are in osmdata.FEATURE_TESTS.
 FEATURES = [
-    ("school", 'nwr["amenity"~"^(school|college)$"]', 150),
-    ("sports_pitch", 'nwr["leisure"~"^(pitch|sports_centre|stadium|track)$"]', 150),
-    ("playground", 'nwr["leisure"="playground"]', 100),
-    ("multistorey_carpark", 'nwr["amenity"="parking"]["parking"="multi-storey"]', 150),
-    ("park", 'nwr["leisure"~"^(park|garden|nature_reserve)$"]', 150),
-    ("forest", 'nwr["natural"="wood"];nwr["landuse"="forest"]', 100),
-    ("water", 'way["waterway"~"^(canal|river)$"];nwr["natural"="water"]', 150),
-    ("rail", 'way["railway"~"^(subway|light_rail|rail)$"]["tunnel"!="yes"]', 200),
-    ("expressway", 'way["highway"="motorway"]', 200),
-    ("mall", 'nwr["shop"="mall"]', 200),
-    ("hawker", 'nwr["amenity"~"^(food_court|marketplace)$"]', 150),
-    ("worship", 'nwr["amenity"="place_of_worship"]', 150),
-    ("tower_block", 'way["building"]["building:levels"~"^([1-9][0-9])$"]', 120),
-    ("landed_house", 'way["building"~"^(house|detached|semidetached_house|terrace|bungalow)$"]', 120),
-    ("industrial", 'nwr["landuse"="industrial"]', 100),
-    ("construction", 'nwr["landuse"="construction"]', 100),
+    ("school", 150), ("sports_pitch", 150), ("playground", 100), ("multistorey_carpark", 150),
+    ("park", 150), ("forest", 100), ("water", 150), ("rail", 200), ("expressway", 200), ("mall", 200),
+    ("hawker", 150), ("worship", 150), ("tower_block", 120), ("landed_house", 120), ("industrial", 100),
+    ("construction", 100),
 ]
 HDB_ERAS = [("hdb_pre1985", 0, 1984), ("hdb_1985_1999", 1985, 1999), ("hdb_2000_2014", 2000, 2014), ("hdb_2015on", 2015, 9999)]
 HDB_RADIUS = 150
@@ -63,44 +51,6 @@ STREET_ABBR = {
     "JALAN": "JLN", "BUKIT": "BT", "UPPER": "UPP", "KAMPONG": "KG", "TANJONG": "TG", "HEIGHTS": "HTS",
     "GARDENS": "GDNS", "PARK": "PK", "COMMONWEALTH": "C'WEALTH", "MARKET": "MKT", "SAINT": "ST.",
 }
-
-
-def _overpass(query: str, log=print, rounds: int = 4) -> dict:
-    """Try each public server in turn, a few rounds with growing pauses: they often answer
-    502/504 when busy and recover within minutes."""
-    errors = []
-    for attempt in range(rounds):
-        if attempt:
-            wait = 60 * attempt
-            log(f"  all Overpass servers failed; retrying in {wait}s")
-            time.sleep(wait)
-        for url in OVERPASS_URLS:
-            try:
-                r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=900)
-                r.raise_for_status()
-                return r.json()
-            except (requests.RequestException, ValueError) as exc:
-                errors.append(f"{url}: {exc}")
-                log(f"  {errors[-1]}")
-    raise RuntimeError("Overpass failed: " + "; ".join(errors[-len(OVERPASS_URLS):]))
-
-
-def _query(statements: str, out: str = "geom") -> str:
-    body = "".join(f"{s.strip()}(area.sg);" for s in statements.split(";") if s.strip())
-    return f'[out:json][timeout:600][maxsize:2000000000];area["ISO3166-1"="SG"][admin_level=2]->.sg;({body});out {out};'
-
-
-def _shapes(element: dict) -> list[np.ndarray]:
-    """(lat, lon) arrays: one per ring/line of a way or relation, or a single point."""
-    if "geometry" in element:
-        return [np.array([[p["lat"], p["lon"]] for p in element["geometry"]])]
-    if "members" in element:
-        return [np.array([[p["lat"], p["lon"]] for p in m["geometry"]]) for m in element["members"] if m.get("geometry")]
-    if "lat" in element:
-        return [np.array([[element["lat"], element["lon"]]])]
-    if "center" in element:
-        return [np.array([[element["center"]["lat"], element["center"]["lon"]]])]
-    return []
 
 
 def normalise_street(name: str) -> str:
@@ -172,20 +122,19 @@ class MapGrid:
 
     @classmethod
     def build(cls, roads, log=print) -> "MapGrid":
+        from . import osmdata
+
+        osm = osmdata.load(log)
         rows = int(np.ceil((BOUNDS[2] - BOUNDS[0]) / STEP))
         cols = int(np.ceil((BOUNDS[3] - BOUNDS[1]) / STEP))
         layers = []
-        for name, statements, radius in FEATURES:
-            data = _overpass(_query(statements), log)
+        for name, radius in FEATURES:
             seed = np.zeros((rows, cols), dtype=bool)
-            n = 0
-            for el in data.get("elements", []):
-                for shape in _shapes(el):
-                    _rasterise(seed, shape)
-                    n += 1
+            for shape in osm["features"][name]:
+                _rasterise(seed, shape)
             layers.append(_dilate(seed, radius))
-            log(f"  {name}: {n} shapes, near {layers[-1].mean():.1%} of the grid")
-        layers += cls._hdb_layers(rows, cols, log)
+            log(f"  {name}: {len(osm['features'][name])} shapes, near {layers[-1].mean():.1%} of the grid")
+        layers += cls._hdb_layers(osm["buildings"], rows, cols, log)
         road_seed = np.zeros((rows, cols), dtype=bool)
         for lines in roads.roads.values():
             for line in lines:
@@ -195,23 +144,24 @@ class MapGrid:
         return cls(np.stack(layers), land)
 
     @staticmethod
-    def _hdb_layers(rows, cols, log) -> list[np.ndarray]:
+    def _hdb_layers(buildings, rows, cols, log) -> list[np.ndarray]:
         layers = [np.zeros((rows, cols), dtype=bool) for _ in HDB_ERAS]
         try:
             years = fetch_hdb_years(log)
-            data = _overpass(_query('way["building"]["addr:housenumber"]["addr:street"]', out="center tags"), log)
         except Exception as exc:  # optional: the other features still work without block ages
             log(f"  ::warning::HDB block ages unavailable ({exc}); skipping era features")
             return layers
         matched = 0
-        for el in data.get("elements", []):
-            t = el.get("tags", {})
-            year = years.get((t["addr:housenumber"].strip().upper(), normalise_street(t["addr:street"])))
-            if year is None or "center" not in el:
+        for ring, tags in buildings:
+            if "addr:housenumber" not in tags or "addr:street" not in tags:
                 continue
+            year = years.get((tags["addr:housenumber"].strip().upper(), normalise_street(tags["addr:street"])))
+            if year is None:
+                continue
+            centre = ring.mean(axis=0, keepdims=True)
             for layer, (_, lo, hi) in zip(layers, HDB_ERAS):
                 if lo <= year <= hi:
-                    _rasterise(layer, np.array([[el["center"]["lat"], el["center"]["lon"]]]))
+                    _rasterise(layer, centre)
             matched += 1
         log(f"  HDB blocks placed on the map: {matched} of {len(years)}")
         return [_dilate(layer, HDB_RADIUS) for layer in layers]

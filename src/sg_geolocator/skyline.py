@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .mapmatch import _overpass, _query, fetch_hdb_years, normalise_street
+from .mapmatch import fetch_hdb_years, normalise_street
 
 M_PER_DEG = 111_000.0
 COS_LAT = np.cos(np.radians(1.35))
@@ -63,20 +63,19 @@ class Buildings:
 
     @classmethod
     def build(cls, log=print) -> "Buildings":
-        data = _overpass(_query('way["building"]["building:levels"];way["building"]["height"];'
-                                'way["building"]["addr:housenumber"]["addr:street"]', out="geom tags"), log)
+        from . import osmdata
+
+        osm = osmdata.load(log)
         try:
             storeys = fetch_hdb_storeys(log)
         except Exception as exc:
             log(f"  ::warning::HDB storeys unavailable ({exc})")
             storeys = {}
         pts, hs = [], []
-        for el in data.get("elements", []):
-            h = building_height(el.get("tags", {}), storeys)
-            geom = el.get("geometry")
-            if h is None or not geom:
+        for ring, tags in osm["buildings"]:
+            h = building_height(tags, storeys)
+            if h is None:
                 continue
-            ring = np.array([[g["lat"], g["lon"]] for g in geom])
             dense = _densify(ring, 8.0)
             pts.append(dense)
             hs.append(np.full(len(dense), h, dtype=np.float32))

@@ -19,7 +19,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "osmium>=4.0"]
+map = ["osmium>=4.0"]  # build-map / build-buildings read the OpenStreetMap extract
 
 [project.scripts]
 sg-geolocate = "sg_geolocator.cli:main"
