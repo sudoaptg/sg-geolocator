@@ -1,7 +1,7 @@
 import numpy as np
 from PIL import Image
 
-from sg_geolocator.skyline import AZ_BINS, Buildings, building_height, match_cost, photo_skyline, render, rerank
+from sg_geolocator.skyline import AZ_BINS, Buildings, building_height, match_cost, photo_skyline, render, search
 
 
 def _city(seed=0, n=150):
@@ -40,8 +40,11 @@ def test_skyline_matches_true_spot_better(tmp_path):
     good = match_cost(prof, *sky)
     other = match_cost(render(*b.near(1.356, 103.806), 25.0), *sky)
     assert good < 1.0 and other > good * 2
-    scores, costs = rerank(b, np.array([true, (1.356, 103.806)]), np.zeros(2), sky)
-    assert scores[0] > scores[1]
+    grid = np.array([(1.35 + i * 0.003, 103.80 + j * 0.003) for i in range(-3, 4) for j in range(-3, 4)])
+    prior = -np.hypot(grid[:, 0] - 1.356, grid[:, 1] - 103.806) * 100  # area guess favours another spot
+    found = search(b, grid, prior, sky)
+    assert found is not None
+    assert abs(found["lat"] - 1.35) < 0.001 and abs(found["lon"] - 103.80) < 0.001
 
 
 def test_no_skyline_when_frame_blocks_the_sky(tmp_path):

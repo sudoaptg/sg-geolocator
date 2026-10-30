@@ -14,9 +14,8 @@ PLACE_RADIUS_KM = 0.1
 # 95% within 1 km; k=10 answers 30% but only 80% within 1 km. Prefer being right over
 # answering often: a wrong "exact spot" is worse than falling back to the area guess.
 PLACE_K = 50
-CLUE_THRESHOLD = 0.5
-SKYLINE_CANDIDATES = 300  # map-match cells re-ranked by skyline: the best one per ~550 m block
-SKYLINE_BLOCK_DEG = 0.005  # even a road name alone usually beats the km-scale visual guess
+CLUE_THRESHOLD = 0.5  # even a road name alone usually beats the km-scale visual guess
+SKYLINE_BLOCK_DEG = 0.005  # skyline candidates: the best map-match cell of every ~550 m block
 
 
 class Geolocator:
@@ -108,7 +107,7 @@ class Geolocator:
         return landmark  # low-confidence landmark guess, or None
 
     def _map_match(self, path, emb) -> Prediction:
-        """Area classifier + map features, then (for elevated views) skyline re-ranking."""
+        """Area classifier + map features; for photos with a distinctive skyline, skyline search."""
         import numpy as np
 
         from .mapmatch import MapGrid, describe, spread_candidates
@@ -118,18 +117,17 @@ class Geolocator:
         seen = describe(self._map.feature_probs(emb[None, :])[0], self._map.prior, self._map.grid.names)
         source = "map-match"
         if self._buildings is not None:
-            from .skyline import rerank
+            from .skyline import search
 
             r, c, _ = self._map.cells
-            top = spread_candidates(score[0], r, c, SKYLINE_CANDIDATES, SKYLINE_BLOCK_DEG)
+            top = spread_candidates(score[0], r, c, len(r), SKYLINE_BLOCK_DEG)
             cand = np.stack(MapGrid.centre(r[top], c[top]), axis=1)
-            res = rerank(self._buildings, cand, score[0, top], path)
-            if res is not None:
-                new, costs = res
-                j = int(np.argmax(new))
-                lat, lon = cand[j]
-                seen.append(f"skyline: outline matches within {costs[j]:.1f}° (best of {len(cand)} candidate spots)")
-                source = "map+skyline"
+            found = search(self._buildings, cand, score[0, top], path)
+            if found is not None:
+                lat, lon = found["lat"], found["lon"]
+                seen.append(f"skyline: outline matches within {found['cost']:.2f}° (typical spot: "
+                            f"{found['median_cost']:.2f}°, {found['n']} areas compared)")
+                source = "skyline"
         label, _ = nearest_landmark(lat, lon)
         return Prediction(float(lat), float(lon), float(conf), source, f"near {label}", seen)
 
