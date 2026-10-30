@@ -56,3 +56,23 @@ def test_building_height_sources():
     assert building_height({"addr:housenumber": "123", "addr:street": "Ang Mo Kio Avenue 3"},
                            {("123", "ANG MO KIO AVE 3"): 12}) == 36.0
     assert building_height({}, {}) is None
+
+
+def test_check_ranks_true_area_above_random(tmp_path):
+    from sg_geolocator.skyline import check
+
+    b = _city(n=400)
+    rel, hs = b.near(1.35, 103.80)
+    path = tmp_path / "p.png"
+    Image.fromarray(_photo_from(render(rel, hs, 25.0), heading=40)).save(path)
+    out = check(b, path, 1.35, 103.80, radius_m=40, n_random=40)
+    assert out["share_of_random_spots_beaten"] > 0.8
+
+
+def test_spread_candidates_one_per_block():
+    from sg_geolocator.mapmatch import spread_candidates
+
+    r = np.array([0, 1, 2, 50, 51])
+    c = np.zeros(5, dtype=int)
+    score = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
+    assert spread_candidates(score, r, c, 10, 0.005).tolist() == [0, 3]

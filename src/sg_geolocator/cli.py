@@ -90,6 +90,12 @@ def main(argv: list[str] | None = None) -> int:
     bb = sub.add_parser("build-buildings", help="Building footprints with heights, for skyline matching")
     bb.add_argument("--out", default="buildings.npz")
 
+    sc = sub.add_parser("skyline-check", help="Diagnostic: skyline error near a known spot vs random spots")
+    sc.add_argument("image")
+    sc.add_argument("--at", required=True, help="lat,lon of the known location")
+    sc.add_argument("--buildings", default="buildings.npz")
+    sc.add_argument("--radius", type=float, default=300.0, help="Search this many metres around --at")
+
     tm = sub.add_parser("train-map", help="Train and evaluate the map matcher on an index (StreetCLIP)")
     tm.add_argument("index")
     tm.add_argument("--grid", default="mapgrid.npz")
@@ -211,6 +217,14 @@ def main(argv: list[str] | None = None) -> int:
         b = Buildings.build(log=print)
         b.save(args.out)
         print(f"{len(b.heights)} footprint points with heights -> {args.out}")
+        return 0
+
+    if args.cmd == "skyline-check":
+        from .skyline import Buildings, check
+
+        lat, lon = (float(x) for x in args.at.split(","))
+        print(json.dumps({"image": args.image, **(check(Buildings.load(args.buildings), args.image, lat, lon, args.radius)
+                                                   or {"error": "no usable skyline or no buildings"})}))
         return 0
 
     if args.cmd == "train-map":

@@ -15,7 +15,8 @@ PLACE_RADIUS_KM = 0.1
 # answering often: a wrong "exact spot" is worse than falling back to the area guess.
 PLACE_K = 50
 CLUE_THRESHOLD = 0.5
-SKYLINE_CANDIDATES = 300  # best map-match cells re-ranked by skyline  # even a road name alone usually beats the km-scale visual guess
+SKYLINE_CANDIDATES = 300  # map-match cells re-ranked by skyline: the best one per ~550 m block
+SKYLINE_BLOCK_DEG = 0.005  # even a road name alone usually beats the km-scale visual guess
 
 
 class Geolocator:
@@ -110,7 +111,7 @@ class Geolocator:
         """Area classifier + map features, then (for elevated views) skyline re-ranking."""
         import numpy as np
 
-        from .mapmatch import MapGrid, describe
+        from .mapmatch import MapGrid, describe, spread_candidates
 
         score = self._map.scores(emb[None, :], self._geocell)
         (lat, lon), conf = (x[0] for x in self._map.best(score))
@@ -119,8 +120,8 @@ class Geolocator:
         if self._buildings is not None:
             from .skyline import rerank
 
-            top = np.argsort(-score[0])[:SKYLINE_CANDIDATES]
             r, c, _ = self._map.cells
+            top = spread_candidates(score[0], r, c, SKYLINE_CANDIDATES, SKYLINE_BLOCK_DEG)
             cand = np.stack(MapGrid.centre(r[top], c[top]), axis=1)
             res = rerank(self._buildings, cand, score[0, top], path)
             if res is not None:

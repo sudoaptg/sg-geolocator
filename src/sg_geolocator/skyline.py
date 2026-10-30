@@ -196,3 +196,34 @@ def rerank(buildings: Buildings, candidates: np.ndarray, scores: np.ndarray, pho
         return None
     costs[~finite] = costs[finite].max()
     return scores - costs / TAU_DEG, costs.tolist()
+
+
+def check(buildings: Buildings, photo, lat: float, lon: float, radius_m: float = 300.0, n_random: int = 300,
+          seed: int = 0) -> dict | None:
+    """Diagnostic: best skyline error near a known location vs at random spots with buildings
+    around them. If the true area does not beat most random spots, skyline matching cannot
+    help for this photo."""
+    sky = photo_skyline(photo)
+    if sky is None:
+        return None
+    az, el = sky
+
+    def best(la, lo):
+        rel, hs = buildings.near(la, lo)
+        if len(hs) < 50:
+            return None
+        return min(match_cost(render(rel, hs, eye), az, el) for eye in EYE_HEIGHTS_M)
+
+    step = 40.0 / M_PER_DEG
+    k = int(radius_m / 40)
+    near = [best(lat + i * step, lon + j * step / COS_LAT) for i in range(-k, k + 1) for j in range(-k, k + 1)
+            if i * i + j * j <= k * k]
+    near = [x for x in near if x is not None]
+    rng = np.random.default_rng(seed)
+    pts = buildings.points[rng.choice(len(buildings.points), n_random * 3, replace=False)]
+    rand = [x for x in (best(la, lo) for la, lo in pts) if x is not None][:n_random]
+    if not near or not rand:
+        return None
+    b = min(near)
+    return {"valid_columns": int(len(az)), "best_near_deg": round(b, 2), "random_median_deg": round(float(np.median(rand)), 2),
+            "share_of_random_spots_beaten": round(float(np.mean(np.array(rand) > b)), 3), "n_random": len(rand)}
