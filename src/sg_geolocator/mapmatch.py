@@ -17,10 +17,13 @@ blocks" thinks: where does that combination exist? This module does the same:
 
 from __future__ import annotations
 
+import gzip
+import json
+
 import numpy as np
 import requests
 
-from .roads import HEADERS, OVERPASS_URLS
+from .roads import CACHE_PATH, HEADERS, OVERPASS_URLS
 
 STEP = 0.0005  # grid cell, degrees (~55 m)
 BOUNDS = (1.15, 103.59, 1.48, 104.10)  # lat_min, lon_min, lat_max, lon_max
@@ -76,7 +79,7 @@ def _overpass(query: str, log=print) -> dict:
 
 def _query(statements: str, out: str = "geom") -> str:
     body = "".join(f"{s.strip()}(area.sg);" for s in statements.split(";") if s.strip())
-    return f'[out:json][timeout:600];area["ISO3166-1"="SG"][admin_level=2]->.sg;({body});out {out};'
+    return f'[out:json][timeout:600][maxsize:2000000000];area["ISO3166-1"="SG"][admin_level=2]->.sg;({body});out {out};'
 
 
 def _shapes(element: dict) -> list[np.ndarray]:
@@ -96,23 +99,37 @@ def normalise_street(name: str) -> str:
     return " ".join(STREET_ABBR.get(w, w) for w in name.upper().replace(".", "").split())
 
 
-def fetch_hdb_years(log=print) -> dict[tuple[str, str], int]:
-    """(block, street) -> year completed, from HDB's property dataset."""
-    out, offset = {}, 0
+def fetch_hdb_records(log=print) -> list[dict]:
+    """Every row of HDB's property dataset (downloaded once, cached)."""
+    path = CACHE_PATH.parent / "hdb_property.json.gz"
+    if path.exists():
+        with gzip.open(path, "rt") as f:
+            return json.load(f)
+    rows, offset = [], 0
     while True:
         r = requests.get(HDB_URL, params={"resource_id": HDB_DATASET, "limit": 5000, "offset": offset},
                          headers=HEADERS, timeout=120)
         r.raise_for_status()
-        recs = r.json()["result"]["records"]
-        for rec in recs:
-            try:
-                out[(rec["blk_no"].strip().upper(), normalise_street(rec["street"]))] = int(rec["year_completed"])
-            except (KeyError, ValueError):
-                pass
-        offset += len(recs)
-        if not recs or offset >= r.json()["result"].get("total", 0):
+        result = r.json()["result"]
+        rows += result["records"]
+        offset += len(result["records"])
+        if not result["records"] or offset >= result.get("total", 0):
             break
-    log(f"  HDB dataset: {len(out)} blocks")
+    log(f"  HDB dataset: {len(rows)} blocks")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wt") as f:
+        json.dump(rows, f)
+    return rows
+
+
+def fetch_hdb_years(log=print, field: str = "year_completed") -> dict[tuple[str, str], int]:
+    """(block, street) -> `field` (year completed, or max_floor_lvl for storeys)."""
+    out = {}
+    for rec in fetch_hdb_records(log):
+        try:
+            out[(rec["blk_no"].strip().upper(), normalise_street(rec["street"]))] = int(rec[field])
+        except (KeyError, ValueError, TypeError):
+            pass
     return out
 
 

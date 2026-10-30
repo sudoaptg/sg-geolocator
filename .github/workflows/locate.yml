@@ -37,7 +37,7 @@ jobs:
               assets = {a["name"] for a in json.loads(subprocess.check_output(
                   ["gh", "release", "view", t, "--json", "assets"]))["assets"]}
               for name in sorted(want & assets):
-                  pats = ["index.npz", "geocell.npz"] if name == "index.npz" else [name]
+                  pats = {"index.npz": ["index.npz", "geocell.npz"], "mapmatch.npz": ["mapmatch.npz", "buildings.npz"]}.get(name, [name])
                   for pat in pats:
                       if pat in assets:
                           subprocess.check_call(["gh", "release", "download", t, "--pattern", pat])
@@ -69,6 +69,7 @@ jobs:
           extra=""; [ -f geocell.npz ] && extra="--geocell geocell.npz"
           [ -f places.npz ] && extra="$extra --places places.npz"
           [ -f mapmatch.npz ] && extra="$extra --map mapmatch.npz"
+          [ -f buildings.npz ] && extra="$extra --buildings buildings.npz"
           sg-geolocate predict "${files[@]}" --index index.npz $extra --no-exif > results.jsonl
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
@@ -92,7 +93,8 @@ jobs:
           print("\nGuesses ignore any GPS stored in the photo; it is only used to show the error. "
                 "`text` = read from signs; `place-match` = matched to reference photos of the same "
                 "spot (tens of metres); `map-match` = scene compared with map features (school, carpark, "
-                "HDB era...) within the area guess; `landmark`, `geocell` and `retrieval` = from how the scene "
+                "HDB era...) within the area guess; `map+skyline` = then re-ranked by the outline of "
+                "nearby blocks (elevated views, experimental); `landmark`, `geocell` and `retrieval` = from how the scene "
                 "looks (km-level).")
           PY
           cat results.jsonl

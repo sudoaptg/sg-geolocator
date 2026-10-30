@@ -3,7 +3,8 @@ name: Build map matcher
 # Compares what a photo shows (school, sports field, carpark, MRT track, HDB era, ...) with
 # what OpenStreetMap and HDB's block data say is at each ~55 m spot of Singapore. Trains on
 # the StreetCLIP reference index (no photo downloads), evaluates on held-out capture
-# sessions and publishes mapmatch.npz.
+# sessions and publishes mapmatch.npz, plus buildings.npz (footprints with heights) for
+# experimental skyline matching of elevated views.
 on:
   workflow_dispatch:
     inputs:
@@ -41,6 +42,9 @@ jobs:
           restore-keys: sg-gazetteers-v1-
       - name: Build map grid (OpenStreetMap + HDB block ages)
         run: sg-geolocate build-map --out mapgrid.npz
+      - name: Building heights for skyline matching
+        continue-on-error: true  # optional: the map matcher works without it
+        run: sg-geolocate build-buildings --out buildings.npz && ls -lh buildings.npz
       - name: Train and evaluate
         run: |
           sg-geolocate train-map index.npz --grid mapgrid.npz --out mapmatch.npz --json-out eval.json --md-out eval.md
@@ -60,4 +64,5 @@ jobs:
             echo "Map data © OpenStreetMap contributors (ODbL). HDB block ages: HDB Property Information,"
             echo "data.gov.sg (Singapore Open Data Licence)."
           } > notes.md
-          gh release create "$tag" mapmatch.npz eval.json --title "$tag" --notes-file notes.md
+          files="mapmatch.npz eval.json"; [ -f buildings.npz ] && files="$files buildings.npz"
+          gh release create "$tag" $files --title "$tag" --notes-file notes.md
