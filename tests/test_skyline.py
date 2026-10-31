@@ -1,7 +1,7 @@
 import numpy as np
 from PIL import Image
 
-from sg_geolocator.skyline import AZ_BINS, Buildings, building_height, match_cost, photo_skyline, render, search
+from sg_geolocator.skyline import _densify, AZ_BINS, Buildings, building_height, match_cost, photo_skyline, render, search
 
 
 def _city(seed=0, n=150):
@@ -10,9 +10,9 @@ def _city(seed=0, n=150):
     for _ in range(n):
         lat, lon = 1.35 + rng.uniform(-0.01, 0.01), 103.8 + rng.uniform(-0.01, 0.01)
         h = rng.choice([12.0, 36.0, 48.0, 60.0])
-        sq = np.array([[lat, lon], [lat, lon + 3e-4], [lat + 2e-4, lon + 3e-4], [lat + 2e-4, lon]])
+        sq = _densify(np.array([[lat, lon], [lat, lon + 3e-4], [lat + 2e-4, lon + 3e-4], [lat + 2e-4, lon], [lat, lon]]), 8.0)
         pts.append(sq)
-        hs.append(np.full(4, h))
+        hs.append(np.full(len(sq), h))
     return Buildings(np.concatenate(pts), np.concatenate(hs).astype(np.float32))
 
 
@@ -64,7 +64,7 @@ def test_building_height_sources():
 def test_check_ranks_true_area_above_random(tmp_path):
     from sg_geolocator.skyline import check
 
-    b = _city(n=400)
+    b = _city(n=200)
     rel, hs = b.near(1.35, 103.80)
     path = tmp_path / "p.png"
     Image.fromarray(_photo_from(render(rel, hs, 25.0), heading=40)).save(path)
@@ -96,3 +96,19 @@ def test_day_sky_with_white_clouds_and_white_blocks(tmp_path):
     assert len(az) > 200
     # Within ~2 rows (the gradient blur shifts the edge up slightly; the tilt search absorbs it).
     assert np.allclose(np.median(el), (90 - 100) / 180 * vfov, atol=0.7)
+
+
+def test_viewpoint_recovers_position_and_floor(tmp_path):
+    from sg_geolocator.skyline import FLOOR_M, viewpoint
+
+    b = _city(seed=3, n=500)
+    true = (1.35 + 0.002, 103.80 + 0.001)  # ~250 m from the anchor
+    floor = 8
+    rel, hs = b.near(*true)
+    path = tmp_path / "v.png"
+    Image.fromarray(_photo_from(render(rel, hs, floor * FLOOR_M + 1.5), heading=200, pitch=-4)).save(path)
+    v = viewpoint(b, path, 1.35, 103.80, radius_m=400)
+    err_m = np.hypot((v["lat"] - true[0]) * 111_000, (v["lon"] - true[1]) * 111_000)
+    assert err_m < 40, v
+    assert abs(v["floor"] - floor) <= 2, v
+    assert v["cost"] < v["typical_cost"]

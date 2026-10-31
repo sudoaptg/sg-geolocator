@@ -15,7 +15,9 @@ PLACE_RADIUS_KM = 0.1
 # answering often: a wrong "exact spot" is worse than falling back to the area guess.
 PLACE_K = 50
 CLUE_THRESHOLD = 0.5  # even a road name alone usually beats the km-scale visual guess
-SKYLINE_BLOCK_DEG = 0.005  # skyline candidates: the best map-match cell of every ~550 m block
+SKYLINE_BLOCK_DEG = 0.005
+VIEWPOINT_RADIUS_M = 600.0  # a sign readable in a photo is rarely further away than this
+VIEWPOINT_DISTINCT = 0.8  # use the skyline viewpoint only if it fits clearly better than a typical spot  # skyline candidates: the best map-match cell of every ~550 m block
 
 
 class Geolocator:
@@ -130,6 +132,26 @@ class Geolocator:
         label, _ = nearest_landmark(lat, lon)
         return Prediction(float(lat), float(lon), float(conf), "map-match", f"near {label}", seen)
 
+    def _viewpoint(self, path, pred: Prediction) -> Prediction:
+        """Once a sign places the photo near a landmark, find the exact viewpoint and floor
+        by matching the skyline against buildings within a few hundred metres of it."""
+        if self._buildings is None:
+            return pred
+        from .geo import haversine_km
+        from .skyline import viewpoint
+
+        v = viewpoint(self._buildings, path, pred.lat, pred.lon, radius_m=VIEWPOINT_RADIUS_M)
+        if v is None or v["cost"] > VIEWPOINT_DISTINCT * v["typical_cost"]:
+            return pred  # no clear skyline, or no spot fits clearly better than the rest
+        dist = haversine_km(pred.lat, pred.lon, v["lat"], v["lon"]) * 1000
+        lo, hi = v["floor_range"]
+        floors = f"floor ~{v['floor']}" + (f" (fits {lo}-{hi})" if hi > lo else "")
+        pred.evidence.append(
+            f"viewpoint from skyline: {dist:.0f} m from the landmark, {floors}, facing {v['heading']:.0f}° "
+            f"(outline error {v['cost']:.2f}° vs typical {v['typical_cost']:.2f}°; near-equal spots within "
+            f"{v['spread_m']:.0f} m)")
+        return Prediction(v["lat"], v["lon"], pred.confidence, "text+skyline", pred.label, pred.evidence)
+
     def predict(self, path: str | Path) -> Prediction | None:
         if self.use_exif:
             gps = read_gps(path)
@@ -144,7 +166,8 @@ class Geolocator:
             found = self._clues.locate_text(texts, prior)
             if found and found.confidence >= CLUE_THRESHOLD:
                 label, _ = nearest_landmark(found.lat, found.lon)
-                return Prediction(found.lat, found.lon, found.confidence, "text", f"near {label}", found.evidence)
+                pred = Prediction(found.lat, found.lon, found.confidence, "text", f"near {label}", found.evidence)
+                return self._viewpoint(path, pred)
             if visual is not None and texts:  # show what was read, so misses can be diagnosed
                 visual.evidence.append("text read, no match: " + ", ".join(repr(t) for t in texts[:8]))
         return visual
