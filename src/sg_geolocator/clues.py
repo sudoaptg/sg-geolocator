@@ -89,7 +89,13 @@ class ClueResult:
 
 
 class TextReader:
-    """RapidOCR wrapper. Small images are upscaled, since signs in a photo are often tiny."""
+    """RapidOCR wrapper. Small images are upscaled, since signs in a photo are often tiny.
+    Large photos are also read in overlapping tiles: some RapidOCR versions shrink big
+    images before detecting text, which loses distant signs (a school's name board a few
+    pixels tall in a 4096 px photo)."""
+
+    TILE = 1280
+    STEP = 1024
 
     def __init__(self, min_score: float = 0.5):
         from rapidocr_onnxruntime import RapidOCR
@@ -97,16 +103,33 @@ class TextReader:
         self.engine = RapidOCR()
         self.min_score = min_score
 
-    def read(self, path: str | Path) -> list[str]:
+    def _run(self, img) -> list[str]:
         import numpy as np
+
+        result, _ = self.engine(np.asarray(img)[:, :, ::-1])  # RapidOCR expects BGR
+        return [text for _, text, score in (result or []) if float(score) >= self.min_score]
+
+    def read(self, path: str | Path) -> list[str]:
         from PIL import Image
 
         img = Image.open(path).convert("RGB")
         if max(img.size) < 1600:
             scale = 1600 / max(img.size)
             img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
-        result, _ = self.engine(np.asarray(img)[:, :, ::-1])  # RapidOCR expects BGR
-        return [text for _, text, score in (result or []) if float(score) >= self.min_score]
+        texts = self._run(img)
+        if max(img.size) > self.TILE * 1.5:
+            for top in _starts(img.height, self.TILE, self.STEP):
+                for left in _starts(img.width, self.TILE, self.STEP):
+                    texts += self._run(img.crop((left, top, left + self.TILE, top + self.TILE)))
+        return list(dict.fromkeys(texts))
+
+
+def _starts(size: int, tile: int, step: int) -> list[int]:
+    """Tile offsets covering `size`, the last tile flush with the edge."""
+    if size <= tile:
+        return [0]
+    out = list(range(0, size - tile, step))
+    return out + [size - tile]
 
 
 # --------------------------------------------------------------------------- gazetteers

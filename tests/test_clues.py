@@ -217,3 +217,11 @@ def test_named_place_from_garbled_sign():
     assert res is not None and abs(res.lat - 1.376) < 1e-6
     assert any("APSN Tanglin School" in e for e in res.evidence)
     assert loc.locate_text(["SCHOOL BUS", "NO PARKING"]) is None
+
+
+def test_tile_offsets_cover_the_image():
+    from sg_geolocator.clues import _starts
+
+    assert _starts(1000, 1280, 1024) == [0]
+    s = _starts(4096, 1280, 1024)
+    assert s[0] == 0 and s[-1] == 4096 - 1280 and all(b - a <= 1024 for a, b in zip(s, s[1:]))
