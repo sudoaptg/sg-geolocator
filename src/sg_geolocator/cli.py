@@ -95,6 +95,20 @@ def main(argv: list[str] | None = None) -> int:
     bn = sub.add_parser("build-names", help="Gazetteer of named places (schools, malls, CCs...) for sign reading")
     bn.add_argument("--out", default="place_names.json.gz")
 
+    sa = sub.add_parser("search-area", help="Find a photo's spot inside an area narrowed down by hints (bus, MRT line, area)")
+    sa.add_argument("image")
+    sa.add_argument("--buildings", required=True)
+    sa.add_argument("--transit", help="transit.json.gz from the map release (for --bus, --line, --near-elevated)")
+    sa.add_argument("--names", help="place_names.json.gz (to resolve --area names)")
+    sa.add_argument("--area", action="append", default=[], help="Place or station name, or lat,lon (repeatable)")
+    sa.add_argument("--radius", type=float, default=1500.0, help="Metres around each --area")
+    sa.add_argument("--bus", help="Bus service number seen in the photo")
+    sa.add_argument("--line", help="Part of an MRT/LRT line name in view or nearby, e.g. Thomson")
+    sa.add_argument("--line-radius", type=float, default=300.0)
+    sa.add_argument("--near-elevated", type=float, help="Metres: an elevated viaduct is in view, keep spots this close to one")
+    sa.add_argument("--view", choices=["street", "bus", "window"], default="street")
+    sa.add_argument("--step", type=float, default=30.0, help="Spacing of candidate spots, metres")
+
     cs = sub.add_parser("chain-sites", help="Every OneMap result for a name (e.g. a preschool chain), with HDB block age")
     cs.add_argument("query")
     cs.add_argument("--out", required=True)
@@ -248,6 +262,30 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(names.entries)} named places -> {args.out} (copy to ~/.cache/sg_geolocator/ to use)")
         return 0
 
+    if args.cmd == "search-area":
+        import numpy as np
+
+        from . import areasearch, transit as transit_mod
+        from .skyline import Buildings
+
+        tr = transit_mod.load(args.transit) if args.transit else None
+        names = None
+        if args.names:
+            from .placenames import PlaceNames
+
+            names = PlaceNames.load(args.names)
+        areas = [_resolve_area(a, tr, names) for a in args.area] or [None]
+        spots = []
+        for a in areas:
+            area = (a[0], a[1], args.radius) if a else None
+            spots.append(areasearch.candidate_spots(tr, area, args.bus, args.line, args.line_radius,
+                                                    args.near_elevated, args.step))
+        spots = np.concatenate([s for s in spots if len(s)]) if any(len(s) for s in spots) else np.zeros((0, 2))
+        print(f"{len(spots)} candidate spots", file=sys.stderr)
+        result = areasearch.search(Buildings.load(args.buildings), args.image, spots, args.view)
+        print(json.dumps({"image": args.image, **result}))
+        return 0
+
     if args.cmd == "chain-sites":
         from .clues import OneMap, _coords
         from .mapmatch import fetch_hdb_records, normalise_street
@@ -345,6 +383,24 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.md_out, "w") as fh:
             fh.write(md)
     return 0
+
+
+def _resolve_area(text: str, transit, names) -> tuple[float, float]:
+    """'lat,lon', or a station / place name (stations first)."""
+    parts = text.split(",")
+    if len(parts) == 2:
+        try:
+            return float(parts[0]), float(parts[1])
+        except ValueError:
+            pass
+    t = text.lower()
+    for st in (transit or {}).get("stations", []):
+        if t in st["name"].lower():
+            return st["lat"], st["lon"]
+    for name, lat, lon in (names.entries if names else []):
+        if t == name.lower() or t in name.lower():
+            return lat, lon
+    raise SystemExit(f"unknown area: {text!r} (give lat,lon)")
 
 
 if __name__ == "__main__":
