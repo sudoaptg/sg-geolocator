@@ -133,6 +133,11 @@ def fetch_hdb_storeys(log=print) -> dict[tuple[str, str], int]:
 
 
 def building_height(tags: dict, storeys: dict) -> float | None:
+    """Roof height: HDB's own storey count when the address is an HDB block (OSM levels are
+    sometimes wrong, and a few metres decide between neighbouring blocks), else OSM."""
+    key = (tags.get("addr:housenumber", "").strip().upper(), normalise_street(tags.get("addr:street", "")))
+    if key in storeys:
+        return storeys[key] * FLOOR_M
     try:
         if "height" in tags:
             return float(tags["height"].replace("m", "").strip())
@@ -140,8 +145,7 @@ def building_height(tags: dict, storeys: dict) -> float | None:
             return float(tags["building:levels"]) * FLOOR_M
     except ValueError:
         pass
-    key = (tags.get("addr:housenumber", "").strip().upper(), normalise_street(tags.get("addr:street", "")))
-    return storeys[key] * FLOOR_M if key in storeys else None
+    return None
 
 
 def _densify(ring: np.ndarray, step_m: float) -> np.ndarray:
@@ -329,7 +333,19 @@ EYE_ABOVE_FLOOR_M = 1.5
 FLOORS = range(1, 51)
 
 
-def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: float = 600.0) -> dict | None:
+def photo_hfov(path) -> float:
+    """Horizontal field of view in degrees, from EXIF when the camera recorded it."""
+    from PIL import Image
+
+    return _exif_hfov(Image.open(path)) or 70.0
+
+
+SIGN_TOLERANCE_DEG = 15.0  # the sign's spot vs the landmark's mapped point (a campus is ~100 m wide)
+MIN_VIEW_STOREYS = 5  # elevated window views: low-rise buildings (carparks, shops) are not candidates
+
+
+def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: float = 600.0,
+              landmark_x: float | None = None) -> dict | None:
     """Where exactly, and how high, a photo was taken, given a place it shows (e.g. a school
     whose sign was read) at (lat, lon). Searches positions within `radius_m` on a 50 m grid
     at a few heights, refines the best ones on a 15 m grid, then tries every floor at the
@@ -342,14 +358,19 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
     az, el = sky
     # The landmark is in the photo, so the camera faced it: only headings that keep it in
     # the frame are tried (without this, spots looking away from it can fit by chance).
-    half_fov = float(np.abs(az).max()) + 3.0
+    hfov = 2 * float(np.abs(az).max()) if isinstance(photo, tuple) else photo_hfov(photo)
     cache: dict = {}
 
     def facing_landmark(la, lo):
-        """Headings that keep the landmark (whose sign was read) inside the frame."""
+        """Headings that keep the landmark (whose sign was read) inside the frame, or, when
+        we know where across the photo the sign is, pointing that way."""
         bearing = np.degrees(np.arctan2((lon - lo) * COS_LAT, lat - la)) % 360
-        off = (_HEADINGS - bearing + 180) % 360 - 180
-        return _HEADINGS[np.abs(off) <= half_fov]
+        if landmark_x is None:
+            target, tol = bearing, hfov / 2 + 3
+        else:
+            target, tol = bearing - (landmark_x - 0.5) * hfov, SIGN_TOLERANCE_DEG
+        off = (_HEADINGS - target + 180) % 360 - 180
+        return _HEADINGS[np.abs(off) <= tol]
 
     def near(la, lo):
         key = (round(la, 6), round(lo, 6))
@@ -423,6 +444,8 @@ def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typi
     for b in blocks:
         pts, height = buildings.footprint(b)
         storeys = max(1, int(round(height / FLOOR_M)))
+        if storeys < MIN_VIEW_STOREYS:
+            continue
         cands += [(la, lo, b, storeys) for la, lo in pts[::2]]
     coarse = []
     for la, lo, b, n in cands:
@@ -441,8 +464,15 @@ def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typi
             typical.append(c[0])
     typical_cost = float(np.median(typical)) if typical else float(np.median([c[0] for c in coarse]))
 
+    # Refine the 10 best spots, plus the 2 best of each of the 6 best blocks, so the block
+    # ranking compares every plausible block at its best floor.
+    picks, per_block = list(coarse[:10]), {}
+    for c in coarse:
+        per_block.setdefault(c[3], []).append(c)
+    for b in list(per_block)[:6]:
+        picks += per_block[b][:2]
     results = []
-    for _, la, lo, b, n in coarse[:10]:
+    for _, la, lo, b, n in dict.fromkeys(picks):
         for f in range(1, n + 1):
             c = cost(la, lo, f * FLOOR_M + EYE_ABOVE_FLOOR_M, b)
             if c:
@@ -454,6 +484,11 @@ def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typi
     floors = sorted({r[3] for r in same})
     spread = max(float(np.hypot((r[1] - best[1]) * M_PER_DEG, (r[2] - best[2]) * M_PER_DEG * COS_LAT)) for r in close)
     others = list(dict.fromkeys(buildings.labels[r[5]] for r in close if r[5] != best[5]))
+    ranked, seen = [], set()  # best fit per block
+    for r in results:
+        if r[5] not in seen:
+            seen.add(r[5])
+            ranked.append({"block": buildings.labels[r[5]], "floor": r[3], "cost": r[0]})
     return {"lat": best[1], "lon": best[2], "floor": best[3], "heading": best[4], "cost": best[0],
             "typical_cost": typical_cost, "spread_m": spread, "floor_range": (floors[0], floors[-1]),
-            "block": buildings.labels[best[5]], "other_blocks": others[:3]}
+            "block": buildings.labels[best[5]], "other_blocks": others[:3], "ranked": ranked[:4]}
