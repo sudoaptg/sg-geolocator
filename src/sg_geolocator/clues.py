@@ -32,6 +32,7 @@ CONFIDENCE = {
     "bus_stop": 0.9,
     "block": 0.9,
     "station": 0.75,
+    "place": 0.8,  # a named school, mall, CC, ...: the sign is usually on or next to it
     "junction": 0.85,  # two road names read together, and those roads meet here
     "street": 0.5,  # roads can be kilometres long; we only get a point on them
 }
@@ -258,13 +259,25 @@ class ClueLocator:
         onemap: OneMap | None = None,
         bus_stops: BusStops | None = None,
         roads=None,
+        names=None,
     ):
         """`roads`: a Roads instance, None to download/load it on first use, or False to
-        resolve street names with OneMap only."""
+        resolve street names with OneMap only. `names`: a PlaceNames gazetteer, None to load
+        it from the cache if present, or False to skip named places."""
         self._reader = reader
         self.onemap = onemap or OneMap()
         self._bus = bus_stops
         self._roads = roads
+        self._names = names
+
+    @property
+    def names(self):
+        if self._names is None:
+            from .placenames import PlaceNames
+
+            path = CACHE_DIR / "place_names.json.gz"
+            self._names = PlaceNames.load(path) if path.exists() else False
+        return self._names or None
 
     @property
     def reader(self) -> TextReader:
@@ -291,6 +304,27 @@ class ClueLocator:
             except Exception:
                 self._roads = False  # offline: fall back to OneMap street lookups
         return self._roads or None
+
+    def _places(self, texts: list[str], prior) -> list[Clue]:
+        """Named schools, malls, CCs ... read on signs. OSM supplies the (fuzzy-matched)
+        official name; OneMap, when it knows that name, the current location (OSM can lag
+        behind a school's move)."""
+        if not self.names:
+            return []
+        out = []
+        for line in _place_lines(texts):
+            matches = self.names.match(line)
+            if not matches:
+                continue
+            cands = []
+            for name, lat, lon, _ in matches:
+                exact = _hits(self.onemap.search(name), lambda r, n=name: r.get("SEARCHVAL", "").upper() == n.upper(),
+                              lambda r, n=name: f"{n}, {r.get('ADDRESS', '')}")
+                cands += exact or [(lat, lon, f"{name} (OpenStreetMap)")]
+            best = _closest(cands, prior)
+            out.append(Clue("place", line, best[0], best[1], CONFIDENCE["place"], best[2]))
+        # The same place read in several boxes counts once.
+        return list({(c.lat, c.lon): c for c in out}.values())
 
     def locate(self, path: str | Path, prior: tuple[float, float] | None = None) -> ClueResult | None:
         return self.locate_text(self.reader.read(path), prior)
@@ -336,6 +370,8 @@ class ClueLocator:
             if best:
                 clues.append(Clue("station", name, best[0], best[1], CONFIDENCE["station"], best[2]))
 
+        clues.extend(self._places(texts, prior))
+
         if roads:
             junctions = []
             for i, a in enumerate(streets):
@@ -363,6 +399,13 @@ class ClueLocator:
         if not clues:
             return None
         return combine(clues, texts)
+
+
+def _place_lines(texts: list[str]) -> list[str]:
+    """Each OCR line, plus neighbouring lines joined (a name and 'SCHOOL' can be read as
+    separate boxes)."""
+    lines = [t for t in texts if t.strip()]
+    return list(dict.fromkeys(lines + [f"{a} {b}" for a, b in zip(lines, lines[1:])]))
 
 
 def combine(clues: list[Clue], texts: list[str] | None = None, agree_km: float = 1.0) -> ClueResult:

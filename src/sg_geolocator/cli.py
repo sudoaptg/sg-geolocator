@@ -87,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     bm = sub.add_parser("build-map", help="Grid of nearby map features (OpenStreetMap + HDB block ages)")
     bm.add_argument("--out", default="mapgrid.npz")
 
+    bn = sub.add_parser("build-names", help="Gazetteer of named places (schools, malls, CCs...) for sign reading")
+    bn.add_argument("--out", default="place_names.json.gz")
+
     bb = sub.add_parser("build-buildings", help="Building footprints with heights, for skyline matching")
     bb.add_argument("--out", default="buildings.npz")
 
@@ -209,6 +212,15 @@ def main(argv: list[str] | None = None) -> int:
         grid = MapGrid.build(Roads.load(log=print), log=print)
         grid.save(args.out)
         print(f"Map grid {grid.shape} with {len(grid.names)} features -> {args.out}")
+        return 0
+
+    if args.cmd == "build-names":
+        from . import osmdata
+        from .placenames import PlaceNames
+
+        names = PlaceNames.from_osm(osmdata.load(log=print))
+        names.save(args.out)
+        print(f"{len(names.entries)} named places -> {args.out} (copy to ~/.cache/sg_geolocator/ to use)")
         return 0
 
     if args.cmd == "build-buildings":

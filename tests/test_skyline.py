@@ -79,3 +79,20 @@ def test_spread_candidates_one_per_block():
     c = np.zeros(5, dtype=int)
     score = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
     assert spread_candidates(score, r, c, 10, 0.005).tolist() == [0, 3]
+
+
+def test_day_sky_with_white_clouds_and_white_blocks(tmp_path):
+    """Bright clouds above a bright, window-textured block: the boundary is the block top."""
+    rng = np.random.default_rng(1)
+    img = np.full((180, 240), 225.0)
+    img[:60] += rng.normal(0, 2, (60, 240))  # smooth cloud
+    img[100:, :] = 215.0
+    img[100:, ::4] = 120.0  # windows / corridors: texture
+    img[100::6, :] = 120.0
+    path = tmp_path / "day.png"
+    Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).save(path)
+    az, el = photo_skyline(path, hfov_deg=70)
+    vfov = 70 * 180 / 240
+    assert len(az) > 200
+    # Within ~2 rows (the gradient blur shifts the edge up slightly; the tilt search absorbs it).
+    assert np.allclose(np.median(el), (90 - 100) / 180 * vfov, atol=0.7)

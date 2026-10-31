@@ -15,6 +15,8 @@ does not identify a spot on its own; it is reported as hints ("skyline also matc
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from .mapmatch import fetch_hdb_years, normalise_street
@@ -149,13 +151,15 @@ def photo_skyline(path, hfov_deg: float | None = None, width: int = 240) -> tupl
     img = img.convert("L")
     h = int(round(img.height * width / img.width))
     a = np.asarray(img.resize((width, h)), dtype=np.float32)
-    top = a[: max(2, h // 20)]
-    sky_level, sky_spread = float(np.median(top)), float(np.percentile(np.abs(top - np.median(top)), 90)) + 8.0
-    # Smooth vertically so one lit window doesn't end the sky.
-    sm = (a[:-2] + a[1:-1] + a[2:]) / 3
-    not_sky = np.abs(sm - sky_level) > 2.5 * sky_spread
-    first = np.where(not_sky.any(axis=0), not_sky.argmax(axis=0), -1)
+    first = _sky_boundary_day(a) if np.median(a[: max(2, h // 10)]) > 90 else _sky_boundary_night(a)
     valid = (first > 2) & (first < h * 0.9)
+    # Drop isolated outliers (a cloud edge, a smooth painted stripe): points far from the
+    # median of their neighbours.
+    pad = np.pad(np.where(valid, first, np.nan).astype(float), 3, constant_values=np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN windows
+        local = np.nanmedian(np.stack([pad[i : i + width] for i in range(7)]), axis=0)
+    valid &= np.abs(first - local) <= max(3, h // 40)
     if valid.mean() < MIN_VALID_COLUMNS:
         return None
     vfov = hfov * h / width
@@ -163,6 +167,37 @@ def photo_skyline(path, hfov_deg: float | None = None, width: int = 240) -> tupl
     az = (cols + 0.5 - width / 2) / width * hfov
     el = (h / 2 - first[cols]) / h * vfov
     return az, el
+
+
+def _sky_boundary_night(a: np.ndarray) -> np.ndarray:
+    """Night: the sky is a dark, even band; lit buildings differ from its level."""
+    h = len(a)
+    top = a[: max(2, h // 20)]
+    sky_level, sky_spread = float(np.median(top)), float(np.percentile(np.abs(top - np.median(top)), 90)) + 8.0
+    # Smooth vertically so one lit window doesn't end the sky.
+    sm = (a[:-2] + a[1:-1] + a[2:]) / 3
+    not_sky = np.abs(sm - sky_level) > 2.5 * sky_spread
+    return np.where(not_sky.any(axis=0), not_sky.argmax(axis=0), -1)
+
+
+def _sky_boundary_day(a: np.ndarray, depth: int = 15, share: float = 0.7) -> np.ndarray:
+    """Day: sky (blue or cloud) is bright and smooth; white HDB blocks are just as bright
+    but textured by windows and corridors. The boundary in each column is the first row
+    where most of the next `depth` rows look textured or dark (a thin cloud edge does not
+    qualify; a building does)."""
+    gy = np.abs(np.diff(a, axis=0, append=a[-1:]))
+    gx = np.abs(np.diff(a, axis=1, append=a[:, -1:]))
+    g = gx + gy
+    # 3x3 box blur of the gradient.
+    p = np.pad(g, 1, mode="edge")
+    g = sum(p[i : i + len(a), j : j + a.shape[1]] for i in range(3) for j in range(3)) / 9
+    top = g[: max(2, len(a) // 10)]
+    g_thr = float(np.median(top)) * 3 + 4
+    not_sky = ~((g < g_thr) & (a > 100))
+    c = np.cumsum(np.vstack([np.zeros((1, a.shape[1])), not_sky]), axis=0)
+    ahead = (c[depth:] - c[:-depth]) / depth  # share of non-sky rows in [r, r + depth)
+    hit = not_sky[: len(ahead)] & (ahead >= share)
+    return np.where(hit.any(axis=0), hit.argmax(axis=0), -1)
 
 
 def _exif_hfov(img) -> float | None:
