@@ -210,10 +210,16 @@ def _exif_hfov(img) -> float | None:
 
 def match_cost(profile: np.ndarray, az: np.ndarray, el: np.ndarray) -> float:
     """Lowest median error (degrees) over every heading and camera tilt."""
+    return match(profile, az, el)[0]
+
+
+def match(profile: np.ndarray, az: np.ndarray, el: np.ndarray) -> tuple[float, float]:
+    """(lowest median error in degrees, the camera heading that gives it, 0 = north)."""
     bins = (np.round(HEADINGS_DEG[:, None] + az[None, :]).astype(int)) % AZ_BINS
     diff = profile[bins] - el[None, :]  # (headings, columns)
     costs = np.median(np.abs(diff[:, :, None] - PITCH_RANGE_DEG[None, None, :]), axis=1)
-    return float(costs.min())
+    h, _ = np.unravel_index(costs.argmin(), costs.shape)
+    return float(costs.min()), float(HEADINGS_DEG[h])
 
 
 def _best_cost(buildings: Buildings, lat: float, lon: float, az, el, min_points: int = 50) -> float | None:
@@ -285,3 +291,74 @@ def check(buildings: Buildings, photo, lat: float, lon: float, radius_m: float =
     b = min(near)
     return {"valid_columns": int(len(az)), "best_near_deg": round(b, 2), "random_median_deg": round(float(np.median(rand)), 2),
             "share_of_random_spots_beaten": round(float(np.mean(np.array(rand) > b)), 3), "n_random": len(rand)}
+
+
+# --------------------------------------------------------------------------- viewpoint near an anchor
+
+EYE_ABOVE_FLOOR_M = 1.5
+FLOORS = range(1, 51)
+
+
+def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: float = 600.0) -> dict | None:
+    """Where exactly, and how high, a photo was taken, given a place it shows (e.g. a school
+    whose sign was read) at (lat, lon). Searches positions within `radius_m` on a 50 m grid
+    at a few heights, refines the best ones on a 15 m grid, then tries every floor at the
+    best few. Returns the best viewpoint with its floor and heading, how much better it
+    matches than a typical spot in the area, and the spread of near-best positions (a
+    rough uncertainty), or None if the photo has no usable skyline."""
+    sky = photo if isinstance(photo, tuple) else photo_skyline(photo)
+    if sky is None:
+        return None
+    az, el = sky
+    cache: dict = {}
+
+    def near(la, lo):
+        key = (round(la, 6), round(lo, 6))
+        if key not in cache:
+            cache[key] = buildings.near(la, lo)
+        return cache[key]
+
+    def cost(la, lo, eye):
+        rel, hs = near(la, lo)
+        if len(hs) < 50:
+            return None
+        return match(render(rel, hs, eye), az, el)
+
+    def grid(la0, lo0, radius, step):
+        k = int(radius / step)
+        d = step / M_PER_DEG
+        return [(la0 + i * d, lo0 + j * d / COS_LAT) for i in range(-k, k + 1) for j in range(-k, k + 1)
+                if i * i + j * j <= k * k]
+
+    coarse = []
+    for la, lo in grid(lat, lon, radius_m, 50.0):
+        best = min((c for c in (cost(la, lo, e) for e in EYE_HEIGHTS_M) if c), default=None)
+        if best:
+            coarse.append((best[0], la, lo))
+    if len(coarse) < 5:
+        return None
+    coarse.sort()
+    typical = float(np.median([c for c, _, _ in coarse]))
+
+    fine = []
+    for _, la0, lo0 in coarse[:5]:
+        for la, lo in grid(la0, lo0, 45.0, 15.0):
+            best = min((c for c in (cost(la, lo, e) for e in EYE_HEIGHTS_M) if c), default=None)
+            if best:
+                fine.append((best[0], la, lo))
+    fine = sorted(set(fine))
+
+    results = []
+    for _, la, lo in fine[:8]:
+        for f in FLOORS:
+            c = cost(la, lo, f * FLOOR_M + EYE_ABOVE_FLOOR_M)
+            if c:
+                results.append((c[0], la, lo, f, c[1]))
+    results.sort()
+    best = results[0]
+    # Positions whose best floor matches nearly as well: how far apart are they?
+    close = [r for r in results if r[0] <= best[0] * 1.1 + 0.02]
+    spread = max(float(np.hypot((r[1] - best[1]) * M_PER_DEG, (r[2] - best[2]) * M_PER_DEG * COS_LAT)) for r in close)
+    floors = sorted({r[3] for r in close})
+    return {"lat": best[1], "lon": best[2], "floor": best[3], "heading": best[4], "cost": best[0],
+            "typical_cost": typical, "spread_m": spread, "floor_range": (floors[0], floors[-1])}

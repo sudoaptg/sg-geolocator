@@ -96,7 +96,7 @@ jobs:
               truth = f"off by **{haversine_km(r['lat'], r['lon'], *gps):.2f} km**" if gps else "no GPS in file"
               print(f"| {r['image']} | {where} | {r['source']} | {r['confidence']:.0%} | {ev} | {truth} |")
           print("\nGuesses ignore any GPS stored in the photo; it is only used to show the error. "
-                "`text` = read from signs; `place-match` = matched to reference photos of the same "
+                "`text` = read from signs (`text+skyline`: then the exact viewpoint and floor from the outline of nearby blocks); `place-match` = matched to reference photos of the same "
                 "spot (tens of metres); `map-match` = scene compared with map features (school, carpark, "
                 "HDB era...) within the area guess; skyline hints compare the outline of "
                 "nearby blocks (elevated views, experimental); `landmark`, `geocell` and `retrieval` = from how the scene "
