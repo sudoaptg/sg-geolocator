@@ -40,11 +40,16 @@ MIN_VALID_COLUMNS = 0.25  # share of photo columns with a usable skyline
 
 
 class Buildings:
-    """Footprint edge points (lat, lon) with the building's roof height in metres."""
+    """Footprint edge points (lat, lon) with the building's roof height in metres. `ids`
+    gives each point's building, `labels` each building's address ("Blk 123 ANG MO KIO AVE
+    3", or "" when unknown)."""
 
-    def __init__(self, points: np.ndarray, heights: np.ndarray):
+    def __init__(self, points: np.ndarray, heights: np.ndarray, ids: np.ndarray | None = None,
+                 labels: list[str] | None = None):
         self.points = points
         self.heights = heights
+        self.ids = np.arange(len(points)) if ids is None else ids
+        self.labels = labels or []
         self.xy = np.stack([(points[:, 1] - 103.8) * M_PER_DEG * COS_LAT, (points[:, 0] - 1.35) * M_PER_DEG], axis=1)
         # Bucket by 500 m tiles for fast radius queries.
         self._tile = 500.0
@@ -55,19 +60,36 @@ class Buildings:
         uniq, start = np.unique(self._keys, axis=0, return_index=True)
         self._start = {tuple(k): (s, e) for k, s, e in zip(uniq, start, list(start[1:]) + [len(order)])}
 
-    def near(self, lat: float, lon: float, radius_m: float = MAX_DIST_M) -> tuple[np.ndarray, np.ndarray]:
-        """(xy relative to the point in metres, heights) of points within radius."""
+    def _select(self, lat: float, lon: float, radius_m: float):
         p = np.array([(lon - 103.8) * M_PER_DEG * COS_LAT, (lat - 1.35) * M_PER_DEG])
         k0 = np.floor(p / self._tile).astype(int)
         r = int(np.ceil(radius_m / self._tile))
         idx = [np.arange(*self._start[(i, j)]) for i in range(k0[0] - r, k0[0] + r + 1)
                for j in range(k0[1] - r, k0[1] + r + 1) if (i, j) in self._start]
         if not idx:
-            return np.zeros((0, 2)), np.zeros(0)
+            return np.zeros(0, dtype=int), p
         sel = self._order[np.concatenate(idx)]
-        rel = self.xy[sel] - p
-        ok = (rel**2).sum(axis=1) <= radius_m**2
-        return rel[ok], self.heights[sel][ok]
+        return sel[((self.xy[sel] - p) ** 2).sum(axis=1) <= radius_m**2], p
+
+    def near(self, lat: float, lon: float, radius_m: float = MAX_DIST_M, exclude: int | None = None):
+        """(xy relative to the point in metres, heights) of points within radius, leaving
+        out building `exclude` (the one the photo is taken from)."""
+        sel, p = self._select(lat, lon, radius_m)
+        if exclude is not None:
+            sel = sel[self.ids[sel] != exclude]
+        return self.xy[sel] - p, self.heights[sel]
+
+    def addressed_near(self, lat: float, lon: float, radius_m: float) -> list[int]:
+        """Ids of buildings with an address that have points within radius."""
+        if not self.labels:
+            return []
+        sel, _ = self._select(lat, lon, radius_m)
+        return sorted({int(i) for i in self.ids[sel] if self.labels[i]})
+
+    def footprint(self, building: int) -> tuple[np.ndarray, float]:
+        """(lat, lon) points and roof height of one building."""
+        m = self.ids == building
+        return self.points[m], float(self.heights[m][0])
 
     @classmethod
     def build(cls, log=print) -> "Buildings":
@@ -79,7 +101,7 @@ class Buildings:
         except Exception as exc:
             log(f"  ::warning::HDB storeys unavailable ({exc})")
             storeys = {}
-        pts, hs = [], []
+        pts, hs, ids, labels = [], [], [], []
         for ring, tags in osm["buildings"]:
             h = building_height(tags, storeys)
             if h is None:
@@ -87,15 +109,21 @@ class Buildings:
             dense = _densify(ring, 8.0)
             pts.append(dense)
             hs.append(np.full(len(dense), h, dtype=np.float32))
-        log(f"  buildings with a height: {len(pts)}")
-        return cls(np.concatenate(pts), np.concatenate(hs))
+            ids.append(np.full(len(dense), len(labels), dtype=np.int32))
+            hn, street = tags.get("addr:housenumber", "").strip(), tags.get("addr:street", "").strip()
+            labels.append(f"Blk {hn} {street}" if hn and street else "")
+        log(f"  buildings with a height: {len(pts)} ({sum(1 for x in labels if x)} with an address)")
+        return cls(np.concatenate(pts), np.concatenate(hs), np.concatenate(ids), labels)
 
     def save(self, path) -> None:
-        np.savez_compressed(path, points=self.points.astype(np.float64), heights=self.heights.astype(np.float16))
+        np.savez_compressed(path, points=self.points.astype(np.float64), heights=self.heights.astype(np.float16),
+                            ids=self.ids.astype(np.int32), labels=np.asarray(self.labels))
 
     @classmethod
     def load(cls, path) -> "Buildings":
         d = np.load(path)
+        if "ids" in d:
+            return cls(d["points"], d["heights"].astype(np.float32), d["ids"], [str(x) for x in d["labels"]])
         return cls(d["points"], d["heights"].astype(np.float32))
 
 
@@ -341,6 +369,10 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
         return [(la0 + i * d, lo0 + j * d / COS_LAT) for i in range(-k, k + 1) for j in range(-k, k + 1)
                 if i * i + j * j <= k * k]
 
+    blocks = buildings.addressed_near(lat, lon, radius_m)
+    if blocks:
+        return _facade_search(buildings, blocks, az, el, facing_landmark, typical_from=(lat, lon, radius_m, cost, grid))
+
     coarse = []
     for la, lo in grid(lat, lon, radius_m, 50.0):
         best = min((c for c in (cost(la, lo, e) for e in EYE_HEIGHTS_M) if c), default=None)
@@ -373,3 +405,55 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
     floors = sorted({r[3] for r in close})
     return {"lat": best[1], "lon": best[2], "floor": best[3], "heading": best[4], "cost": best[0],
             "typical_cost": typical, "spread_m": spread, "floor_range": (floors[0], floors[-1])}
+
+
+def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typical_from) -> dict | None:
+    """Viewpoint search on the walls of addressed buildings (a window photo is taken from
+    one): positions every ~16 m along each footprint, the building itself left out of the
+    rendered skyline, and only floors it has."""
+    lat0, lon0, radius_m, grid_cost, grid = typical_from
+
+    def cost(la, lo, eye, own):
+        rel, hs = buildings.near(la, lo, exclude=own)
+        if len(hs) < 50:
+            return None
+        return match(render(rel, hs, eye), az, el, facing(la, lo))
+
+    cands = []  # (lat, lon, building, storeys)
+    for b in blocks:
+        pts, height = buildings.footprint(b)
+        storeys = max(1, int(round(height / FLOOR_M)))
+        cands += [(la, lo, b, storeys) for la, lo in pts[::2]]
+    coarse = []
+    for la, lo, b, n in cands:
+        tries = sorted({max(1, round(n * q)) for q in (0.25, 0.5, 0.75, 1.0)})
+        best = min((c for c in (cost(la, lo, f * FLOOR_M + EYE_ABOVE_FLOOR_M, b) for f in tries) if c), default=None)
+        if best:
+            coarse.append((best[0], la, lo, b, n))
+    if len(coarse) < 5:
+        return None
+    coarse.sort(key=lambda x: x[0])
+    # What a typical spot in the area scores, for comparison (open-grid positions).
+    typical = []
+    for la, lo in grid(lat0, lon0, radius_m, 100.0):
+        c = grid_cost(la, lo, 25.0)
+        if c:
+            typical.append(c[0])
+    typical_cost = float(np.median(typical)) if typical else float(np.median([c[0] for c in coarse]))
+
+    results = []
+    for _, la, lo, b, n in coarse[:10]:
+        for f in range(1, n + 1):
+            c = cost(la, lo, f * FLOOR_M + EYE_ABOVE_FLOOR_M, b)
+            if c:
+                results.append((c[0], la, lo, f, c[1], b))
+    results.sort(key=lambda x: x[0])
+    best = results[0]
+    close = [r for r in results if r[0] <= best[0] * 1.1 + 0.02]
+    same = [r for r in close if r[5] == best[5]]
+    floors = sorted({r[3] for r in same})
+    spread = max(float(np.hypot((r[1] - best[1]) * M_PER_DEG, (r[2] - best[2]) * M_PER_DEG * COS_LAT)) for r in close)
+    others = list(dict.fromkeys(buildings.labels[r[5]] for r in close if r[5] != best[5]))
+    return {"lat": best[1], "lon": best[2], "floor": best[3], "heading": best[4], "cost": best[0],
+            "typical_cost": typical_cost, "spread_m": spread, "floor_range": (floors[0], floors[-1]),
+            "block": buildings.labels[best[5]], "other_blocks": others[:3]}

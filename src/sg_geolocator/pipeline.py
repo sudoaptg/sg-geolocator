@@ -146,8 +146,10 @@ class Geolocator:
         dist = haversine_km(pred.lat, pred.lon, v["lat"], v["lon"]) * 1000
         lo, hi = v["floor_range"]
         floors = f"floor ~{v['floor']}" + (f" (fits {lo}-{hi})" if hi > lo else "")
+        where = f"{v['block']}, " if v.get("block") else ""
+        also = f"; also fits {', '.join(v['other_blocks'])}" if v.get("other_blocks") else ""
         pred.evidence.append(
-            f"viewpoint from skyline: {dist:.0f} m from the landmark, {floors}, facing {v['heading']:.0f}° "
+            f"viewpoint from skyline: {where}{floors}, {dist:.0f} m from the landmark, facing {v['heading']:.0f}°{also} "
             f"(outline error {v['cost']:.2f}° vs typical {v['typical_cost']:.2f}°; near-equal spots within "
             f"{v['spread_m']:.0f} m)")
         return Prediction(v["lat"], v["lon"], pred.confidence, "text+skyline", pred.label, pred.evidence)
