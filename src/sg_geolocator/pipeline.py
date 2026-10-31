@@ -132,7 +132,7 @@ class Geolocator:
         label, _ = nearest_landmark(lat, lon)
         return Prediction(float(lat), float(lon), float(conf), "map-match", f"near {label}", seen)
 
-    def _viewpoint(self, path, pred: Prediction) -> Prediction:
+    def _viewpoint(self, path, pred: Prediction, sign_x: float | None = None) -> Prediction:
         """Once a sign places the photo near a landmark, find the exact viewpoint and floor
         by matching the skyline against buildings within a few hundred metres of it."""
         if self._buildings is None:
@@ -140,14 +140,16 @@ class Geolocator:
         from .geo import haversine_km
         from .skyline import viewpoint
 
-        v = viewpoint(self._buildings, path, pred.lat, pred.lon, radius_m=VIEWPOINT_RADIUS_M)
+        v = viewpoint(self._buildings, path, pred.lat, pred.lon, radius_m=VIEWPOINT_RADIUS_M, landmark_x=sign_x)
         if v is None or v["cost"] > VIEWPOINT_DISTINCT * v["typical_cost"]:
             return pred  # no clear skyline, or no spot fits clearly better than the rest
         dist = haversine_km(pred.lat, pred.lon, v["lat"], v["lon"]) * 1000
         lo, hi = v["floor_range"]
         floors = f"floor ~{v['floor']}" + (f" (fits {lo}-{hi})" if hi > lo else "")
         where = f"{v['block']}, " if v.get("block") else ""
-        also = f"; also fits {', '.join(v['other_blocks'])}" if v.get("other_blocks") else ""
+        ranked = v.get("ranked") or []
+        also = ("; ranked: " + ", ".join(f"{r['block']} floor ~{r['floor']} ({r['cost']:.2f}°)" for r in ranked)
+                if len(ranked) > 1 else "")
         pred.evidence.append(
             f"viewpoint from skyline: {where}{floors}, {dist:.0f} m from the landmark, facing {v['heading']:.0f}°{also} "
             f"(outline error {v['cost']:.2f}° vs typical {v['typical_cost']:.2f}°; near-equal spots within "
@@ -164,12 +166,14 @@ class Geolocator:
         visual = self.visual(path)
         if self._clues is not None:
             prior = (visual.lat, visual.lon) if visual else None
-            texts = self._clues.reader.read(path)
-            found = self._clues.locate_text(texts, prior)
+            positions = self._clues.reader.read_positions(path)
+            texts = list(positions)
+            found = self._clues.locate_text(texts, prior, positions)
             if found and found.confidence >= CLUE_THRESHOLD:
                 label, _ = nearest_landmark(found.lat, found.lon)
                 pred = Prediction(found.lat, found.lon, found.confidence, "text", f"near {label}", found.evidence)
-                return self._viewpoint(path, pred)
+                sign_x = next((c.x for c in found.clues if c.kind == "place" and c.x is not None), None)
+                return self._viewpoint(path, pred, sign_x)
             if visual is not None and texts:  # show what was read, so misses can be diagnosed
                 visual.evidence.append("text read, no match: " + ", ".join(repr(t) for t in texts[:8]))
         return visual
