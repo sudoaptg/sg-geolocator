@@ -11,6 +11,9 @@ on:
         description: "Also output the area classifier's probability for every cell (for combining with other clues)"
         type: boolean
         default: false
+      photo_b64:
+        description: "Optional: one small JPEG as base64, located without committing it to the repo (photos/ is then ignored)"
+        default: ""
       check_at:
         description: "Optional lat,lon where the photo was really taken: also report how well the skyline matches there vs random spots"
         default: ""
@@ -69,10 +72,16 @@ jobs:
           path: ~/.cache/sg_geolocator
           key: sg-gazetteers-v1-${{ github.run_id }}
           restore-keys: sg-gazetteers-v1-
+      - name: Decode the inline photo
+        if: ${{ inputs.photo_b64 != '' }}
+        env:
+          PHOTO: ${{ inputs.photo_b64 }}
+        run: mkdir -p inline && printf '%s' "$PHOTO" | base64 -d > inline/photo.jpg && ls -l inline
       - name: Locate
         run: |
           shopt -s nullglob nocaseglob
           files=(photos/*.jpg photos/*.jpeg photos/*.png photos/*.webp)
+          [ -f inline/photo.jpg ] && files=(inline/photo.jpg)
           if [ ${#files[@]} -eq 0 ]; then echo "No photos in photos/"; exit 0; fi
           extra=""; [ -f geocell.npz ] && extra="--geocell geocell.npz"
           [ -f places.npz ] && extra="$extra --places places.npz"
@@ -111,7 +120,9 @@ jobs:
         if: ${{ inputs.area_guess }}
         run: |
           shopt -s nullglob nocaseglob
-          sg-geolocate area-guess photos/*.jpg photos/*.jpeg photos/*.png --geocell geocell.npz | grep '^{' > area.jsonl
+          files=(photos/*.jpg photos/*.jpeg photos/*.png)
+          [ -f inline/photo.jpg ] && files=(inline/photo.jpg)
+          sg-geolocate area-guess "${files[@]}" --geocell geocell.npz | grep '^{' > area.jsonl
           cat area.jsonl
       - uses: actions/upload-artifact@v4
         if: ${{ inputs.area_guess }}
