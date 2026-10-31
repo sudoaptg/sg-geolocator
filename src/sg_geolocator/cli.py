@@ -87,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
     bm = sub.add_parser("build-map", help="Grid of nearby map features (OpenStreetMap + HDB block ages)")
     bm.add_argument("--out", default="mapgrid.npz")
 
+    ag = sub.add_parser("area-guess", help="Area classifier probabilities for each ~1 km cell (JSON)")
+    ag.add_argument("images", nargs="+")
+    ag.add_argument("--geocell", required=True)
+    ag.add_argument("--min-prob", type=float, default=0.001, help="Leave out cells below this probability")
+
     bn = sub.add_parser("build-names", help="Gazetteer of named places (schools, malls, CCs...) for sign reading")
     bn.add_argument("--out", default="place_names.json.gz")
 
@@ -117,6 +122,19 @@ def main(argv: list[str] | None = None) -> int:
         for img in args.images:
             pred = geo.predict(img)
             print(json.dumps({"image": img, **(pred.as_dict() if pred else {"error": "no prediction"})}))
+        return 0
+
+    if args.cmd == "area-guess":
+        from .embedder import make_embedder
+        from .geocell import GeoCellClassifier
+
+        clf = GeoCellClassifier.load(args.geocell)
+        emb = make_embedder(clf.model).embed_images(args.images)
+        for img, p in zip(args.images, clf.predict_proba(emb)):
+            keep = [i for i in p.argsort()[::-1] if p[i] >= args.min_prob]
+            cells = [{"lat": round(float(clf.centroids[i][0]), 5), "lon": round(float(clf.centroids[i][1]), 5),
+                      "p": round(float(p[i]), 5)} for i in keep]
+            print(json.dumps({"image": img, "cell_deg": clf.cell_deg, "cells": cells}))
         return 0
 
     if args.cmd == "fetch-mapillary":

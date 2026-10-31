@@ -138,3 +138,22 @@ def test_viewpoint_names_block_and_floor(tmp_path):
     v = viewpoint(b, path, *anchor, radius_m=400)
     assert v["block"] == labels[own], v
     assert abs(v["floor"] - floor) <= 2, v
+
+
+def test_render_built_short_block_in_front_and_open_ground():
+    """A short block close by and a tall one far behind both show as built; the ground
+    between them stays open."""
+    from sg_geolocator.skyline import PANO_EL_MIN, PANO_STEP, render_built
+
+    near = np.array([[x, 40.0] for x in np.arange(-10, 11, 4.0)])  # 40 m north, 12 m tall
+    far = np.array([[x, 200.0] for x in np.arange(-30, 31, 6.0)])  # 200 m north, 45 m tall
+    rel = np.vstack([near, far])
+    hs = np.concatenate([np.full(len(near), 12.0), np.full(len(far), 45.0)])
+    pano = render_built(rel, hs, eye_m=25.0)
+    col = pano[0]  # looking north
+    el = PANO_EL_MIN + (np.arange(len(col)) + 0.5) * PANO_STEP
+    def at(e):
+        return col[np.argmin(np.abs(el - e))]
+    assert at(-25) and at(-20)  # the short block's walls below us
+    assert not at(-9)  # open ground between the blocks
+    assert at(2) and not at(10)  # the tall block's top is ~5.7 deg up

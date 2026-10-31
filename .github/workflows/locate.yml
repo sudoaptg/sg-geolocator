@@ -7,6 +7,10 @@ on:
     paths: ["photos/**"]
   workflow_dispatch:
     inputs:
+      area_guess:
+        description: "Also output the area classifier's probability for every cell (for combining with other clues)"
+        type: boolean
+        default: false
       check_at:
         description: "Optional lat,lon where the photo was really taken: also report how well the skyline matches there vs random spots"
         default: ""
@@ -103,6 +107,17 @@ jobs:
                 "looks (km-level).")
           PY
           cat results.jsonl
+      - name: Area guess per cell
+        if: ${{ inputs.area_guess }}
+        run: |
+          shopt -s nullglob nocaseglob
+          sg-geolocate area-guess photos/*.jpg photos/*.jpeg photos/*.png --geocell geocell.npz | grep '^{' > area.jsonl
+          cat area.jsonl
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.area_guess }}
+        with:
+          name: area-guess
+          path: area.jsonl
       - name: Skyline check against the known location
         if: ${{ inputs.check_at != '' }}
         run: |
