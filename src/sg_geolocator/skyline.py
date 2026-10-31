@@ -29,7 +29,7 @@ MAX_DIST_M = 1500.0
 MIN_DIST_M = 20.0  # ignore the building the photo is taken from
 AZ_BINS = 360
 PITCH_RANGE_DEG = np.arange(-15, 16, 1.0)
-HEADINGS_DEG = np.arange(0, 360, 2.0)
+HEADINGS_DEG = _HEADINGS = np.arange(0, 360, 2.0)
 TAU_DEG = 0.25  # a profile error of this many degrees costs one log unit
 # Weight of the map-match / area score next to the skyline when ranking skyline spots.
 PRIOR_WEIGHT = 0.05
@@ -213,8 +213,10 @@ def match_cost(profile: np.ndarray, az: np.ndarray, el: np.ndarray) -> float:
     return match(profile, az, el)[0]
 
 
-def match(profile: np.ndarray, az: np.ndarray, el: np.ndarray) -> tuple[float, float]:
-    """(lowest median error in degrees, the camera heading that gives it, 0 = north)."""
+def match(profile: np.ndarray, az: np.ndarray, el: np.ndarray, headings: np.ndarray | None = None) -> tuple[float, float]:
+    """(lowest median error in degrees, the camera heading that gives it, 0 = north), over
+    `headings` (default: all)."""
+    HEADINGS_DEG = _HEADINGS if headings is None else headings
     bins = (np.round(HEADINGS_DEG[:, None] + az[None, :]).astype(int)) % AZ_BINS
     diff = profile[bins] - el[None, :]  # (headings, columns)
     costs = np.median(np.abs(diff[:, :, None] - PITCH_RANGE_DEG[None, None, :]), axis=1)
@@ -310,7 +312,16 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
     if sky is None:
         return None
     az, el = sky
+    # The landmark is in the photo, so the camera faced it: only headings that keep it in
+    # the frame are tried (without this, spots looking away from it can fit by chance).
+    half_fov = float(np.abs(az).max()) + 3.0
     cache: dict = {}
+
+    def facing_landmark(la, lo):
+        """Headings that keep the landmark (whose sign was read) inside the frame."""
+        bearing = np.degrees(np.arctan2((lon - lo) * COS_LAT, lat - la)) % 360
+        off = (_HEADINGS - bearing + 180) % 360 - 180
+        return _HEADINGS[np.abs(off) <= half_fov]
 
     def near(la, lo):
         key = (round(la, 6), round(lo, 6))
@@ -322,7 +333,7 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
         rel, hs = near(la, lo)
         if len(hs) < 50:
             return None
-        return match(render(rel, hs, eye), az, el)
+        return match(render(rel, hs, eye), az, el, facing_landmark(la, lo))
 
     def grid(la0, lo0, radius, step):
         k = int(radius / step)
