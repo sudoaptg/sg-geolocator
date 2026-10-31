@@ -27,7 +27,7 @@ jobs:
           python - <<'PY'
           from huggingface_hub import snapshot_download
           snapshot_download("geolocal/StreetCLIP", local_dir="streetclip",
-                            allow_patterns=["*.json", "*.txt", "*.safetensors", "*.model", "merges.txt", "vocab.json"])
+                            allow_patterns=["*.json", "*.txt", "*.safetensors", "pytorch_model.bin"])
           from sg_geolocator.embedder import PlaceEmbedder
           PlaceEmbedder()  # fills ~/.cache/torch/hub with the EigenPlaces + CosPlace code and weights
           PY
