@@ -204,3 +204,16 @@ def test_overpass_json_parsing():
     ]}
     r = Roads.from_overpass_json(data)
     assert r.names == ["DELTA ROAD"] and r.roads["DELTA ROAD"][0][0] == [1.29012, 103.82099]
+
+
+def test_named_place_from_garbled_sign():
+    from sg_geolocator.clues import ClueLocator, OneMap
+    from sg_geolocator.placenames import PlaceNames
+
+    names = PlaceNames([("APSN Tanglin School", 1.3760, 103.8570), ("Tanglin Secondary School", 1.3050, 103.7700)])
+    onemap = OneMap(cache_path="/nonexistent/x.json", offline=True)
+    loc = ClueLocator(onemap=onemap, bus_stops=BusStops({}), roads=False, names=names)
+    res = loc.locate_text(["APEN", "TANGUNSCHOOL"])
+    assert res is not None and abs(res.lat - 1.376) < 1e-6
+    assert any("APSN Tanglin School" in e for e in res.evidence)
+    assert loc.locate_text(["SCHOOL BUS", "NO PARKING"]) is None

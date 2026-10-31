@@ -48,6 +48,24 @@ FEATURE_TESTS = {
     "construction": lambda t: t.get("landuse") == "construction",
 }
 BUILDING_TAGS = ("height", "building:levels", "addr:housenumber", "addr:street")
+# Named places whose signs are worth reading: schools, malls, community clubs, hawker
+# centres, places of worship, ... (the text-clue stage matches OCR text against these).
+NAMED_TESTS = {
+    "amenity": {"school", "college", "university", "kindergarten", "community_centre", "hospital", "clinic",
+                "place_of_worship", "marketplace", "food_court", "library", "police", "fire_station",
+                "theatre", "cinema", "post_office"},
+    "shop": {"mall", "supermarket", "department_store"},
+    "leisure": {"sports_centre", "stadium", "park", "swimming_pool"},
+    "tourism": {"attraction", "museum", "hotel"},
+    "building": {"school", "hospital", "church", "temple", "mosque", "commercial", "retail"},
+}
+
+
+def _named(tags) -> str | None:
+    name = tags.get("name") or tags.get("name:en")
+    if not name:
+        return None
+    return name if any(tags.get(k) in v for k, v in NAMED_TESTS.items()) else None
 
 
 def _in_sg(lat: float, lon: float) -> bool:
@@ -61,6 +79,7 @@ def extract(pbf: str | Path, log=print) -> dict:
 
     features: dict[str, list[np.ndarray]] = {n: [] for n in FEATURE_TESTS}
     buildings: list[tuple[np.ndarray, dict]] = []
+    names: list[tuple[str, float, float]] = []  # (name, lat, lon of the centre)
 
     def coords(nodes):
         try:
@@ -72,6 +91,9 @@ def extract(pbf: str | Path, log=print) -> dict:
         def node(self, n):
             if not n.tags or not _in_sg(n.location.lat, n.location.lon):
                 return
+            name = _named(n.tags)
+            if name:
+                names.append((name, n.location.lat, n.location.lon))
             for name, test in FEATURE_TESTS.items():
                 if test(n.tags):
                     features[name].append(np.array([[n.location.lat, n.location.lon]]))
@@ -81,11 +103,14 @@ def extract(pbf: str | Path, log=print) -> dict:
                 return
             matches = [name for name, test in FEATURE_TESTS.items() if test(w.tags)]
             is_building = "building" in w.tags and any(k in w.tags for k in BUILDING_TAGS)
-            if not matches and not is_building:
+            named = _named(w.tags)
+            if not matches and not is_building and not named:
                 return
             pts = coords(w.nodes)
             if pts is None or not _in_sg(*pts[0]):
                 return
+            if named:
+                names.append((named, *pts.mean(axis=0)))
             for name in matches:
                 features[name].append(pts)
             if is_building:
@@ -95,7 +120,8 @@ def extract(pbf: str | Path, log=print) -> dict:
             if a.from_way():  # closed ways were handled in way()
                 return
             matches = [name for name, test in FEATURE_TESTS.items() if test(a.tags)]
-            if not matches:
+            named = _named(a.tags)
+            if not matches and not named:
                 return
             for ring in a.outer_rings():
                 pts = coords(ring)
@@ -103,17 +129,20 @@ def extract(pbf: str | Path, log=print) -> dict:
                     continue
                 for name in matches:
                     features[name].append(pts)
+                if named:
+                    names.append((named, *pts.mean(axis=0)))
+                    named = None  # one entry per relation
 
     start = time.time()
     Handler().apply_file(str(pbf), locations=True)
     log(f"  read {pbf} in {time.time() - start:.0f}s: "
-        + ", ".join(f"{n} {len(v)}" for n, v in features.items()) + f", buildings {len(buildings)}")
-    return {"features": features, "buildings": buildings}
+        + ", ".join(f"{n} {len(v)}" for n, v in features.items()) + f", buildings {len(buildings)}, named places {len(names)}")
+    return {"features": features, "buildings": buildings, "names": names}
 
 
 def load(log=print) -> dict:
     """Singapore features from the Geofabrik extract (downloaded and parsed once, cached)."""
-    cache = CACHE_PATH.parent / "osm_features.pkl.gz"
+    cache = CACHE_PATH.parent / "osm_features_v2.pkl.gz"  # v2: with named places
     if cache.exists():
         with gzip.open(cache, "rb") as f:
             return pickle.load(f)

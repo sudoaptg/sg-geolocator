@@ -41,7 +41,7 @@ jobs:
               assets = {a["name"] for a in json.loads(subprocess.check_output(
                   ["gh", "release", "view", t, "--json", "assets"]))["assets"]}
               for name in sorted(want & assets):
-                  pats = {"index.npz": ["index.npz", "geocell.npz"], "mapmatch.npz": ["mapmatch.npz", "buildings.npz"]}.get(name, [name])
+                  pats = {"index.npz": ["index.npz", "geocell.npz"], "mapmatch.npz": ["mapmatch.npz", "buildings.npz", "place_names.json.gz"]}.get(name, [name])
                   for pat in pats:
                       if pat in assets:
                           subprocess.check_call(["gh", "release", "download", t, "--pattern", pat])
@@ -74,6 +74,7 @@ jobs:
           [ -f places.npz ] && extra="$extra --places places.npz"
           [ -f mapmatch.npz ] && extra="$extra --map mapmatch.npz"
           [ -f buildings.npz ] && extra="$extra --buildings buildings.npz"
+          [ -f place_names.json.gz ] && mkdir -p ~/.cache/sg_geolocator && cp place_names.json.gz ~/.cache/sg_geolocator/
           sg-geolocate predict "${files[@]}" --index index.npz $extra --no-exif > results.jsonl
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json

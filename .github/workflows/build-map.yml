@@ -42,6 +42,8 @@ jobs:
           restore-keys: sg-gazetteers-v1-
       - name: Build map grid (OpenStreetMap extract + HDB block ages)
         run: sg-geolocate build-map --out mapgrid.npz
+      - name: Named places for sign reading
+        run: sg-geolocate build-names --out place_names.json.gz && ls -lh place_names.json.gz
       - name: Building heights for skyline matching
         continue-on-error: true  # optional: the map matcher works without it
         run: sg-geolocate build-buildings --out buildings.npz && ls -lh buildings.npz
@@ -61,8 +63,10 @@ jobs:
             echo
             cat eval.md
             echo
+            echo "place_names.json.gz: named places for reading signs (copy to ~/.cache/sg_geolocator/)."
+            echo
             echo "Map data © OpenStreetMap contributors (ODbL). HDB block ages: HDB Property Information,"
             echo "data.gov.sg (Singapore Open Data Licence)."
           } > notes.md
-          files="mapmatch.npz eval.json"; [ -f buildings.npz ] && files="$files buildings.npz"
+          files="mapmatch.npz eval.json place_names.json.gz"; [ -f buildings.npz ] && files="$files buildings.npz"
           gh release create "$tag" $files --title "$tag" --notes-file notes.md
