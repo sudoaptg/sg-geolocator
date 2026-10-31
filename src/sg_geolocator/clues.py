@@ -339,13 +339,18 @@ class ClueLocator:
             matches = self.names.match(line)
             if not matches:
                 continue
+            from .placenames import squash
+
             cands = []
             for name, lat, lon, _ in matches:
-                exact = _hits(self.onemap.search(name), lambda r, n=name: r.get("SEARCHVAL", "").upper() == n.upper(),
-                              lambda r, n=name: f"{n}, {r.get('ADDRESS', '')}")
-                cands += exact or [(lat, lon, f"{name} (OpenStreetMap)")]
+                # OneMap knows current addresses; its name may be longer ("APSN TANGLIN SCHOOL").
+                hits = _hits(self.onemap.search(name), lambda r, n=squash(name): n in squash(r.get("SEARCHVAL", "")),
+                             lambda r: f"{r.get('SEARCHVAL', '')}, {r.get('ADDRESS', '')}")
+                cands += hits or [(lat, lon, f"{name} (OpenStreetMap)")]
+            cands = list({(round(c[0], 3), round(c[1], 3)): c for c in cands}.values())
             best = _closest(cands, prior)
-            out.append(Clue("place", line, best[0], best[1], CONFIDENCE["place"], best[2]))
+            detail = best[2] if len(cands) == 1 else f"{best[2]} (closest to the visual guess of {len(cands)} places with this name)"
+            out.append(Clue("place", line, best[0], best[1], CONFIDENCE["place"], detail))
         # The same place read in several boxes counts once.
         return list({(c.lat, c.lon): c for c in out}.values())
 

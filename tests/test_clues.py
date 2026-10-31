@@ -225,3 +225,18 @@ def test_tile_offsets_cover_the_image():
     assert _starts(1000, 1280, 1024) == [0]
     s = _starts(4096, 1280, 1024)
     assert s[0] == 0 and s[-1] == 4096 - 1280 and all(b - a <= 1024 for a, b in zip(s, s[1:]))
+
+
+def test_named_place_prefers_onemap_current_sites(tmp_path):
+    from sg_geolocator.clues import ClueLocator, OneMap
+    from sg_geolocator.placenames import PlaceNames
+
+    names = PlaceNames([("Tanglin School", 1.2901, 103.8198)])  # OSM: old campus
+    onemap = OneMap(cache_path=tmp_path / "c.json", offline=True)
+    onemap.cache["TANGLIN SCHOOL|1"] = [
+        {"SEARCHVAL": "APSN TANGLIN SCHOOL", "ADDRESS": "8 ANG MO KIO STREET 54", "LATITUDE": "1.3758", "LONGITUDE": "103.8567"},
+        {"SEARCHVAL": "TANGLIN MALL", "ADDRESS": "163 TANGLIN ROAD", "LATITUDE": "1.3047", "LONGITUDE": "103.8238"},
+    ]
+    loc = ClueLocator(onemap=onemap, bus_stops=BusStops({}), roads=False, names=names)
+    res = loc.locate_text(["TANGUNSCHOOL"], prior=(1.38, 103.85))
+    assert abs(res.lat - 1.3758) < 1e-6 and "ANG MO KIO" in res.evidence[0]
