@@ -112,3 +112,29 @@ def test_viewpoint_recovers_position_and_floor(tmp_path):
     assert err_m < 40, v
     assert abs(v["floor"] - floor) <= 2, v
     assert v["cost"] < v["typical_cost"]
+
+
+def test_viewpoint_names_block_and_floor(tmp_path):
+    from sg_geolocator.skyline import FLOOR_M, viewpoint
+
+    rng = np.random.default_rng(5)
+    pts, hs, ids, labels = [], [], [], []
+    for k in range(300):
+        lat, lon = 1.35 + rng.uniform(-0.008, 0.008), 103.8 + rng.uniform(-0.008, 0.008)
+        ring = _densify(np.array([[lat, lon], [lat, lon + 4e-4], [lat + 1.2e-4, lon + 4e-4], [lat + 1.2e-4, lon], [lat, lon]]), 8.0)
+        pts.append(ring)
+        hs.append(np.full(len(ring), rng.choice([15.0, 36.0, 45.0, 60.0])))
+        ids.append(np.full(len(ring), k))
+        labels.append(f"Blk {100 + k} TEST STREET" if k % 3 == 0 else "")
+    b = Buildings(np.concatenate(pts), np.concatenate(hs).astype(np.float32), np.concatenate(ids), labels)
+    own = next(k for k in range(0, 300, 3) if hs[k][0] == 60.0
+               and abs(pts[k][0][0] - 1.35) < 0.004 and abs(pts[k][0][1] - 103.8) < 0.004)
+    view = pts[own][3]
+    floor = 8
+    rel, h = b.near(*view, exclude=own)
+    anchor = (view[0] - 0.0015, view[1])  # landmark ~170 m south
+    path = tmp_path / "f.png"
+    Image.fromarray(_photo_from(render(rel, h, floor * FLOOR_M + 1.5), heading=180)).save(path)
+    v = viewpoint(b, path, *anchor, radius_m=400)
+    assert v["block"] == labels[own], v
+    assert abs(v["floor"] - floor) <= 2, v
