@@ -1,6 +1,7 @@
-"""Public transport geometry from OpenStreetMap: bus routes by service number, MRT/LRT
-tracks (elevated or underground) and stations. A bus showing its service number, or an
-elevated MRT viaduct in view, limits where a photo can have been taken.
+"""Public transport and road geometry from OpenStreetMap: bus routes by service number,
+MRT/LRT tracks (elevated or underground), stations, and the road network with flyovers
+marked. A bus showing its service number, an elevated MRT viaduct or a road flyover in view
+limits where a photo can have been taken.
 
 Data © OpenStreetMap contributors, ODbL (read from the Geofabrik extract, see osmdata).
 """
@@ -14,9 +15,21 @@ from pathlib import Path
 from .osmdata import _in_sg
 
 
+ROAD_KINDS = {"motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential",
+              "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link"}
+
+
+def _layer(tags) -> int:
+    try:
+        return int(tags.get("layer", "0"))
+    except ValueError:
+        return 0
+
+
 def extract(pbf: str | Path, log=print) -> dict:
     """{"bus": {service: [[lat, lon], ...] per way}, "rail": [{"line", "elevated", "pts"}],
-    "stations": [{"name", "lat", "lon", "network"}]}"""
+    "stations": [{"name", "lat", "lon", "network"}],
+    "roads": [{"kind", "name", "lanes", "elevated", "underground", "pts"}]}"""
     import osmium
 
     bus_ways: dict[int, set[str]] = {}  # way id -> service numbers using it
@@ -40,6 +53,7 @@ def extract(pbf: str | Path, log=print) -> dict:
 
     bus: dict[str, list] = {}
     rail = []
+    roads = []
 
     class Ways(osmium.SimpleHandler):
         def node(self, n):
@@ -51,7 +65,8 @@ def extract(pbf: str | Path, log=print) -> dict:
 
         def way(self, w):
             is_rail = w.tags.get("railway") in ("subway", "light_rail", "rail", "monorail")
-            if w.id not in bus_ways and not is_rail:
+            is_road = w.tags.get("highway") in ROAD_KINDS
+            if w.id not in bus_ways and not is_rail and not is_road:
                 return
             try:
                 pts = [[round(n.lat, 6), round(n.lon, 6)] for n in w.nodes]
@@ -61,19 +76,20 @@ def extract(pbf: str | Path, log=print) -> dict:
                 return
             for svc in bus_ways.get(w.id, ()):
                 bus.setdefault(svc, []).append(pts)
+            layer = _layer(w.tags)
+            underground = w.tags.get("tunnel") == "yes" or layer < 0
+            elevated = (w.tags.get("bridge") == "yes" or layer > 0) and not underground
+            if is_road:
+                roads.append({"kind": w.tags["highway"], "name": w.tags.get("name", ""), "lanes": w.tags.get("lanes", ""),
+                              "elevated": elevated, "underground": underground, "pts": pts})
             if is_rail:
-                try:
-                    layer = int(w.tags.get("layer", "0"))
-                except ValueError:
-                    layer = 0
-                underground = w.tags.get("tunnel") == "yes" or layer < 0
-                elevated = (w.tags.get("bridge") == "yes" or layer > 0) and not underground
                 rail.append({"line": rail_lines.get(w.id, w.tags.get("name", "")), "elevated": elevated,
                              "underground": underground, "pts": pts})
 
     Ways().apply_file(str(pbf), locations=True)
-    log(f"  bus services: {len(bus)}, rail ways: {len(rail)} ({sum(r['elevated'] for r in rail)} elevated), stations: {len(stations)}")
-    return {"bus": bus, "rail": rail, "stations": stations}
+    log(f"  bus services: {len(bus)}, rail ways: {len(rail)} ({sum(r['elevated'] for r in rail)} elevated), "
+        f"stations: {len(stations)}, roads: {len(roads)} ({sum(r['elevated'] for r in roads)} flyover ways)")
+    return {"bus": bus, "rail": rail, "stations": stations, "roads": roads}
 
 
 def save(data: dict, path) -> None:

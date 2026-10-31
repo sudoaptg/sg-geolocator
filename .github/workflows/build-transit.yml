@@ -1,0 +1,33 @@
+name: Build transit and roads
+
+# Bus routes, MRT/LRT tracks, stations and the road network (flyovers marked) from the
+# OpenStreetMap extract, published as transit.json.gz. Quick: no map grid or training.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests osmium
+          pip install -e . --no-deps
+      - run: sg-geolocate build-transit --out transit.json.gz && ls -lh transit.json.gz
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="transit-$(date -u +%Y%m%d-%H%M)"
+          gh release create "$tag" transit.json.gz --title "$tag" \
+            --notes "Bus routes, rail, stations and roads (flyovers marked). Map data © OpenStreetMap contributors (ODbL)."
