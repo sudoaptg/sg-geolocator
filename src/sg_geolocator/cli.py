@@ -95,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
     bn = sub.add_parser("build-names", help="Gazetteer of named places (schools, malls, CCs...) for sign reading")
     bn.add_argument("--out", default="place_names.json.gz")
 
+    cs = sub.add_parser("chain-sites", help="Every OneMap result for a name (e.g. a preschool chain), with HDB block age")
+    cs.add_argument("query")
+    cs.add_argument("--out", required=True)
+
     bt = sub.add_parser("build-transit", help="Bus routes, MRT/LRT tracks and stations from the OSM extract")
     bt.add_argument("--out", default="transit.json.gz")
 
@@ -242,6 +246,33 @@ def main(argv: list[str] | None = None) -> int:
         names = PlaceNames.from_osm(osmdata.load(log=print))
         names.save(args.out)
         print(f"{len(names.entries)} named places -> {args.out} (copy to ~/.cache/sg_geolocator/ to use)")
+        return 0
+
+    if args.cmd == "chain-sites":
+        from .clues import OneMap, _coords
+        from .mapmatch import fetch_hdb_records, normalise_street
+
+        om = OneMap()
+        results = om.search(args.query, pages=60)
+        hdb = {}
+        try:
+            for r in fetch_hdb_records(print):
+                hdb[(r["blk_no"].strip().upper(), normalise_street(r["street"]))] = r
+        except Exception as exc:
+            print(f"::warning::HDB data unavailable ({exc})")
+        sites, seen = [], set()
+        for r in results:
+            c = _coords(r)
+            if not c or (r.get("SEARCHVAL"), c) in seen:
+                continue
+            seen.add((r.get("SEARCHVAL"), c))
+            blk, road = r.get("BLK_NO", "").strip().upper(), r.get("ROAD_NAME", "")
+            h = hdb.get((blk, normalise_street(road)), {})
+            sites.append({"name": r.get("SEARCHVAL"), "address": r.get("ADDRESS"), "blk": blk, "road": road,
+                          "lat": c[0], "lon": c[1], "year": h.get("year_completed"), "storeys": h.get("max_floor_lvl")})
+        with open(args.out, "w") as fh:
+            json.dump(sites, fh, indent=1)
+        print(f"{len(sites)} sites for {args.query!r} -> {args.out} ({sum(1 for x in sites if x['year'])} HDB blocks)")
         return 0
 
     if args.cmd == "build-transit":

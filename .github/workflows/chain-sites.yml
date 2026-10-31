@@ -1,0 +1,37 @@
+name: Chain sites
+
+# All OneMap results for a name (e.g. "PCF SPARKLETOTS"), with HDB block age and storeys,
+# published as a release asset. For cross-referencing a shop or preschool chain seen in a
+# photo against candidate areas.
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: "OneMap search text"
+        default: "PCF SPARKLETOTS"
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - name: Search OneMap
+        env:
+          QUERY: ${{ inputs.query }}
+        run: sg-geolocate chain-sites "$QUERY" --out sites.json
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUERY: ${{ inputs.query }}
+        run: |
+          tag="sites-$(date -u +%Y%m%d-%H%M%S)"
+          gh release create "$tag" sites.json --title "$tag" --notes "OneMap results for: $QUERY (with HDB block year and storeys from data.gov.sg)"
