@@ -235,7 +235,12 @@ def _sky_boundary_day(a: np.ndarray, depth: int = 15, share: float = 0.7) -> np.
 def _exif_hfov(img) -> float | None:
     try:
         f35 = img.getexif().get_ifd(0x8769).get(0xA405)  # FocalLengthIn35mmFilm
-        return float(np.degrees(2 * np.arctan(36 / (2 * f35)))) if f35 else None
+        if not f35:
+            return None
+        long_side = 2 * np.arctan(36 / (2 * f35))  # the 36 mm frame width is the long side
+        if img.height > img.width:  # portrait: the horizontal view is the narrow one
+            return float(np.degrees(2 * np.arctan(np.tan(long_side / 2) * img.width / img.height)))
+        return float(np.degrees(long_side))
     except Exception:
         return None
 
