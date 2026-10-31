@@ -19,8 +19,9 @@ class ClipEmbedder:
         self._torch = torch
         self.model_name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = CLIPModel.from_pretrained(model_name).to(self.device).eval()
-        self.processor = CLIPProcessor.from_pretrained(model_name)
+        source = _local_copy(model_name) or model_name
+        self.model = CLIPModel.from_pretrained(source).to(self.device).eval()
+        self.processor = CLIPProcessor.from_pretrained(source)
 
     def embed_images(self, paths: list[str | Path]) -> np.ndarray:
         from PIL import Image
@@ -40,6 +41,18 @@ class ClipEmbedder:
     @property
     def logit_scale(self) -> float:
         return float(self.model.logit_scale.exp().item())
+
+
+def _local_copy(model_name: str) -> str | None:
+    """A local copy of a Hugging Face model, for machines that can't reach the Hub: set
+    SG_GEOLOCATOR_MODELS to a folder holding e.g. streetclip/ (from the models release)."""
+    import os
+
+    root = os.environ.get("SG_GEOLOCATOR_MODELS")
+    if not root:
+        return None
+    path = Path(root) / model_name.split("/")[-1].lower()
+    return str(path) if path.is_dir() else None
 
 
 def _as_array(feats) -> np.ndarray:

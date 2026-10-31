@@ -1,0 +1,48 @@
+name: Publish model weights
+
+# Publishes the model weights the pipeline uses (StreetCLIP from Hugging Face, EigenPlaces
+# from torch.hub) as release assets, so environments that can reach GitHub but not those
+# hosts can run everything locally, and photos never need uploading anywhere.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install (CPU-only torch)
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - name: Download and pack the models
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download("geolocal/StreetCLIP", local_dir="streetclip",
+                            allow_patterns=["*.json", "*.txt", "*.safetensors", "*.model", "merges.txt", "vocab.json"])
+          from sg_geolocator.embedder import PlaceEmbedder
+          PlaceEmbedder()  # fills ~/.cache/torch/hub with the EigenPlaces + CosPlace code and weights
+          PY
+          du -sh streetclip ~/.cache/torch/hub
+          tar -C . -cf - streetclip | split -b 1900m - streetclip.tar.part-
+          tar -C ~/.cache/torch -czf torch-hub.tar.gz hub
+          ls -lh streetclip.tar.part-* torch-hub.tar.gz
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="models-$(date -u +%Y%m%d-%H%M)"
+          {
+            echo "Model weights for running sg-geolocate offline:"
+            echo "- StreetCLIP (geolocal/StreetCLIP, CC BY-NC 4.0): cat streetclip.tar.part-* | tar -x"
+            echo "- EigenPlaces/CosPlace torch.hub cache (MIT): tar -xzf torch-hub.tar.gz -C ~/.cache/torch"
+          } > notes.md
+          gh release create "$tag" streetclip.tar.part-* torch-hub.tar.gz --title "$tag" --notes-file notes.md
