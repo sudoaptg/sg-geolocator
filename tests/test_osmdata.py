@@ -6,7 +6,7 @@ from sg_geolocator import osmdata  # noqa: E402
 
 OSM = """<?xml version='1.0' encoding='UTF-8'?>
 <osm version="0.6" generator="test">
-  <node id="1" lat="1.3500" lon="103.8500" version="1"><tag k="shop" v="mall"/></node>
+  <node id="1" lat="1.3500" lon="103.8500" version="1"><tag k="shop" v="mall"/><tag k="name" v="Pearl Mall"/><tag k="name:zh" v="珍珠坊"/></node>
   <node id="2" lat="1.3600" lon="103.8600" version="1"/>
   <node id="3" lat="1.3600" lon="103.8610" version="1"/>
   <node id="4" lat="1.3610" lon="103.8610" version="1"/>
@@ -36,5 +36,6 @@ def test_extract_features_and_buildings(tmp_path):
     assert len(f["rail"]) == 1  # the tunnel is not visible
     assert len(f["tower_block"]) == 1
     assert len(f["school"]) == 1 and len(f["school"][0]) == 5  # multipolygon assembled into a closed ring
+    assert [n[0] for n in data["names"]] == ["Pearl Mall", "珍珠坊"]
     (ring, tags), = data["buildings"]
     assert tags["addr:street"] == "Ang Mo Kio Avenue 3" and len(ring) == 5

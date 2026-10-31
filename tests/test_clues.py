@@ -240,3 +240,11 @@ def test_named_place_prefers_onemap_current_sites(tmp_path):
     loc = ClueLocator(onemap=onemap, bus_stops=BusStops({}), roads=False, names=names)
     res = loc.locate_text(["TANGUNSCHOOL"], prior=(1.38, 103.85))
     assert abs(res.lat - 1.3758) < 1e-6 and "ANG MO KIO" in res.evidence[0]
+
+
+def test_chinese_sign_matches_chinese_place_name():
+    from sg_geolocator.placenames import PlaceNames
+
+    p = PlaceNames([("People's Park Complex", 1.284, 103.843), ("珍珠坊", 1.284, 103.843)])
+    assert [m[0] for m in p.match("珍珠坊")] == ["珍珠坊"]
+    assert p.match("珍珠") == []  # too short to be a clue

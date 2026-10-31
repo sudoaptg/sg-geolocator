@@ -57,15 +57,17 @@ NAMED_TESTS = {
     "shop": {"mall", "supermarket", "department_store"},
     "leisure": {"sports_centre", "stadium", "park", "swimming_pool"},
     "tourism": {"attraction", "museum", "hotel"},
-    "building": {"school", "hospital", "church", "temple", "mosque", "commercial", "retail"},
+    "building": {"school", "hospital", "church", "temple", "mosque", "commercial", "retail", "apartments"},
 }
 
 
-def _named(tags) -> str | None:
-    name = tags.get("name") or tags.get("name:en")
-    if not name:
-        return None
-    return name if any(tags.get(k) in v for k, v in NAMED_TESTS.items()) else None
+def _named(tags) -> list[str]:
+    """The place's names worth matching on signs: the main name plus its English and Chinese
+    names (Chinatown and estate signs are often in Chinese, e.g. People's Park Complex is
+    signed 珍珠坊)."""
+    if not any(tags.get(k) in v for k, v in NAMED_TESTS.items()):
+        return []
+    return list(dict.fromkeys(n for n in (tags.get(k) for k in ("name", "name:en", "name:zh", "name:zh-Hans")) if n))
 
 
 def _in_sg(lat: float, lon: float) -> bool:
@@ -91,9 +93,8 @@ def extract(pbf: str | Path, log=print) -> dict:
         def node(self, n):
             if not n.tags or not _in_sg(n.location.lat, n.location.lon):
                 return
-            name = _named(n.tags)
-            if name:
-                names.append((name, n.location.lat, n.location.lon))
+            for nm in _named(n.tags):
+                names.append((nm, n.location.lat, n.location.lon))
             for name, test in FEATURE_TESTS.items():
                 if test(n.tags):
                     features[name].append(np.array([[n.location.lat, n.location.lon]]))
@@ -109,8 +110,8 @@ def extract(pbf: str | Path, log=print) -> dict:
             pts = coords(w.nodes)
             if pts is None or not _in_sg(*pts[0]):
                 return
-            if named:
-                names.append((named, *pts.mean(axis=0)))
+            for nm in named:
+                names.append((nm, *pts.mean(axis=0)))
             for name in matches:
                 features[name].append(pts)
             if is_building:
@@ -129,9 +130,9 @@ def extract(pbf: str | Path, log=print) -> dict:
                     continue
                 for name in matches:
                     features[name].append(pts)
-                if named:
-                    names.append((named, *pts.mean(axis=0)))
-                    named = None  # one entry per relation
+                for nm in named:
+                    names.append((nm, *pts.mean(axis=0)))
+                named = []  # one entry per relation
 
     start = time.time()
     Handler().apply_file(str(pbf), locations=True)
@@ -142,7 +143,7 @@ def extract(pbf: str | Path, log=print) -> dict:
 
 def load(log=print) -> dict:
     """Singapore features from the Geofabrik extract (downloaded and parsed once, cached)."""
-    cache = CACHE_PATH.parent / "osm_features_v2.pkl.gz"  # v2: with named places
+    cache = CACHE_PATH.parent / "osm_features_v3.pkl.gz"  # v3: named places with Chinese names
     if cache.exists():
         with gzip.open(cache, "rb") as f:
             return pickle.load(f)

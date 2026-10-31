@@ -29,6 +29,16 @@ ABBREVIATIONS = {"PRI": "PRIMARY", "SEC": "SECONDARY", "SCH": "SCHOOL", "CTR": "
                  "JC": "JUNIOR COLLEGE", "POLY": "POLYTECHNIC", "MKT": "MARKET", "HOSP": "HOSPITAL"}
 
 
+CJK_MIN_LEN = 3
+CJK_CUTOFF = 0.8
+CJK_MAX_PLACES = 3
+
+
+def _cjk(text: str) -> str:
+    """The Chinese characters in text."""
+    return "".join(ch for ch in text if "\u4e00" <= ch <= "\u9fff")
+
+
 def squash(text: str) -> str:
     words = re.sub(r"[^A-Z0-9 ]", " ", text.upper()).split()
     s = "".join(ABBREVIATIONS.get(w, w) for w in words).replace(" ", "")
@@ -55,6 +65,8 @@ class PlaceNames:
 
     def match(self, text: str) -> list[tuple[str, float, float, float]]:
         """(official name, lat, lon, similarity) of the places the text most likely names."""
+        if _cjk(text):
+            return self._match_cjk(_cjk(text))
         sq = squash(text)
         kw = _keyword(sq)
         if not kw or len(sq) < MIN_LEN or len(sq) - len(kw) < 3:
@@ -74,6 +86,23 @@ class PlaceNames:
             return []
         top = max(best.values())
         return [(*self.entries[i], s) for i, s in best.items() if s >= top - 1e-9]
+
+    def _match_cjk(self, text: str) -> list[tuple[str, float, float, float]]:
+        """Chinese signs: the name's Chinese characters must be nearly the same as the text
+        (at least 3 characters; a common word matching many places is no clue)."""
+        if len(text) < CJK_MIN_LEN:
+            return []
+        hits = []
+        for name, lat, lon in self.entries:
+            zh = _cjk(name)
+            if len(zh) >= CJK_MIN_LEN:
+                r = difflib.SequenceMatcher(None, text, zh).ratio()
+                if r >= CJK_CUTOFF:
+                    hits.append((name, lat, lon, r))
+        if not hits or len({h[0] for h in hits}) > CJK_MAX_PLACES:
+            return []
+        top = max(h[3] for h in hits)
+        return [h for h in hits if h[3] >= top - 1e-9]
 
     @classmethod
     def from_osm(cls, osm: dict) -> "PlaceNames":
