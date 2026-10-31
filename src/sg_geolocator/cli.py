@@ -95,6 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     bn = sub.add_parser("build-names", help="Gazetteer of named places (schools, malls, CCs...) for sign reading")
     bn.add_argument("--out", default="place_names.json.gz")
 
+    bt = sub.add_parser("build-transit", help="Bus routes, MRT/LRT tracks and stations from the OSM extract")
+    bt.add_argument("--out", default="transit.json.gz")
+
     bb = sub.add_parser("build-buildings", help="Building footprints with heights, for skyline matching")
     bb.add_argument("--out", default="buildings.npz")
 
@@ -239,6 +242,23 @@ def main(argv: list[str] | None = None) -> int:
         names = PlaceNames.from_osm(osmdata.load(log=print))
         names.save(args.out)
         print(f"{len(names.entries)} named places -> {args.out} (copy to ~/.cache/sg_geolocator/ to use)")
+        return 0
+
+    if args.cmd == "build-transit":
+        from . import transit
+        from .osmdata import CACHE_PATH, EXTRACT_URL
+        import requests
+
+        pbf = CACHE_PATH.parent / "region.osm.pbf"
+        if not pbf.exists():
+            pbf.parent.mkdir(parents=True, exist_ok=True)
+            with requests.get(EXTRACT_URL, stream=True, timeout=600) as r:
+                r.raise_for_status()
+                with open(pbf, "wb") as f:
+                    for chunk in r.iter_content(1 << 20):
+                        f.write(chunk)
+        transit.save(transit.extract(pbf), args.out)
+        print(f"transit -> {args.out}")
         return 0
 
     if args.cmd == "build-buildings":

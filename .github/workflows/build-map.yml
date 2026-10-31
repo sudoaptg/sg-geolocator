@@ -44,6 +44,8 @@ jobs:
         run: sg-geolocate build-map --out mapgrid.npz
       - name: Named places for sign reading
         run: sg-geolocate build-names --out place_names.json.gz && ls -lh place_names.json.gz
+      - name: Bus routes, MRT tracks and stations
+        run: sg-geolocate build-transit --out transit.json.gz && ls -lh transit.json.gz
       - name: Building heights for skyline matching
         continue-on-error: true  # optional: the map matcher works without it
         run: sg-geolocate build-buildings --out buildings.npz && ls -lh buildings.npz
@@ -68,5 +70,5 @@ jobs:
             echo "Map data © OpenStreetMap contributors (ODbL). HDB block ages: HDB Property Information,"
             echo "data.gov.sg (Singapore Open Data Licence)."
           } > notes.md
-          files="mapmatch.npz eval.json place_names.json.gz"; [ -f buildings.npz ] && files="$files buildings.npz"
+          files="mapmatch.npz eval.json place_names.json.gz transit.json.gz"; [ -f buildings.npz ] && files="$files buildings.npz"
           gh release create "$tag" $files --title "$tag" --notes-file notes.md

@@ -39,3 +39,24 @@ def test_extract_features_and_buildings(tmp_path):
     assert [n[0] for n in data["names"]] == ["Pearl Mall", "珍珠坊"]
     (ring, tags), = data["buildings"]
     assert tags["addr:street"] == "Ang Mo Kio Avenue 3" and len(ring) == 5
+
+
+def test_transit_bus_route_and_elevated_rail(tmp_path):
+    from sg_geolocator import transit
+
+    osm = """<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6">
+  <node id="1" lat="1.30" lon="103.90" version="1"/>
+  <node id="2" lat="1.31" lon="103.91" version="1"/>
+  <node id="3" lat="1.32" lon="103.92" version="1"><tag k="railway" v="station"/><tag k="name" v="Test MRT"/></node>
+  <way id="10" version="1"><nd ref="1"/><nd ref="2"/><tag k="highway" v="primary"/></way>
+  <way id="11" version="1"><nd ref="1"/><nd ref="2"/><tag k="railway" v="subway"/><tag k="bridge" v="yes"/></way>
+  <way id="12" version="1"><nd ref="2"/><nd ref="1"/><tag k="railway" v="subway"/><tag k="tunnel" v="yes"/></way>
+  <relation id="20" version="1"><member type="way" ref="10" role=""/><tag k="type" v="route"/><tag k="route" v="bus"/><tag k="ref" v="36"/></relation>
+</osm>"""
+    path = tmp_path / "t.osm"
+    path.write_text(osm)
+    d = transit.extract(path, log=lambda *_: None)
+    assert list(d["bus"]) == ["36"] and len(d["bus"]["36"][0]) == 2
+    assert [(r["elevated"], r["underground"]) for r in d["rail"]] == [(True, False), (False, True)]
+    assert d["stations"][0]["name"] == "Test MRT"
