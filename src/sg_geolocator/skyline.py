@@ -400,8 +400,9 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
 
     blocks = buildings.addressed_near(lat, lon, radius_m)
     if blocks:
+        scene = None if isinstance(photo, tuple) else photo_scene(photo, hfov)
         return _facade_search(buildings, blocks, az, el, facing_landmark, typical_from=(lat, lon, radius_m, cost, grid),
-                              sign_el=sign_el)
+                              sign_el=sign_el, scene=scene)
 
     coarse = []
     for la, lo in grid(lat, lon, radius_m, 50.0):
@@ -460,17 +461,23 @@ def _line_of_sight(buildings: Buildings, la, lo, eye, own, lat0, lon0, target_h,
     return True
 
 
-def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typical_from, sign_el=None) -> dict | None:
+def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typical_from, sign_el=None,
+                   scene=None) -> dict | None:
     """Viewpoint search on the walls of addressed buildings (a window photo is taken from
     one): positions every ~16 m along each footprint, the building itself left out of the
     rendered skyline, and only floors it has."""
     lat0, lon0, radius_m, grid_cost, grid = typical_from
 
     def cost(la, lo, eye, own):
+        """(score, heading, tilt): outline error, plus, for daytime photos, how badly the 3D
+        view (which parts are built, which open) disagrees with the photo."""
         rel, hs = buildings.near(la, lo, exclude=own)
         if len(hs) < 50:
             return None
-        return match(render(rel, hs, eye), az, el, facing(la, lo))
+        c, heading, tilt = match(render(rel, hs, eye), az, el, facing(la, lo))
+        if scene is not None:
+            c += MASK_WEIGHT * (1 - view_overlap(scene, render_built(rel, hs, eye), heading, tilt))
+        return c, heading, tilt
 
     cands = []  # (lat, lon, building, storeys)
     for b in blocks:
@@ -529,7 +536,9 @@ def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typi
     best = results[0]
     close = [r for r in results if r[0] <= best[0] * 1.1 + 0.02]
     same = [r for r in close if r[5] == best[5]]
-    floors = sorted({r[3] for r in same})
+    # Map heights are good to a few metres, so the floor is a range of at least +-2.
+    floors = sorted({r[3] for r in same} | {best[3] - FLOOR_SLACK, best[3] + FLOOR_SLACK})
+    floors = [max(1, floors[0]), floors[-1]]
     spread = max(float(np.hypot((r[1] - best[1]) * M_PER_DEG, (r[2] - best[2]) * M_PER_DEG * COS_LAT)) for r in close)
     others = list(dict.fromkeys(buildings.labels[r[5]] for r in close if r[5] != best[5]))
     ranked, seen = [], set()  # best fit per block
@@ -540,3 +549,76 @@ def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typi
     return {"lat": best[1], "lon": best[2], "floor": best[3], "heading": best[4], "cost": best[0],
             "typical_cost": typical_cost, "spread_m": spread, "floor_range": (floors[0], floors[-1]),
             "block": buildings.labels[best[5]], "other_blocks": others[:3], "ranked": ranked[:4]}
+
+
+# --------------------------------------------------------------------------- 3D view: what is built where
+
+PANO_STEP = 0.5  # degrees per panorama cell
+PANO_EL_MIN = -60.0
+MASK_WEIGHT = 1.0  # degrees of outline error one unit of view mismatch (1 - IoU) is worth
+FLOOR_SLACK = 2  # floors either side of the best: map heights are only good to a few metres
+
+
+def photo_scene(path, hfov_deg: float | None = None, width: int = 160) -> dict | None:
+    """Daytime photo as a coarse grid of 'built' (walls, roofs, roads) vs 'open' (sky,
+    vegetation) cells, with each column's azimuth and each row's elevation relative to
+    the image centre. Columns where the top of the frame isn't sky (window frame) are
+    dropped. None for night photos (colours unreliable) or without a usable sky."""
+    from PIL import Image
+
+    img = Image.open(path)
+    hfov = hfov_deg or _exif_hfov(img) or 70.0
+    h = int(round(img.height * width / img.width))
+    rgb = np.asarray(img.convert("RGB").resize((width, h)), dtype=np.float32)
+    grey = rgb.mean(axis=2)
+    if np.median(grey[: max(2, h // 10)]) <= 90:
+        return None
+    first = _sky_boundary_day(grey)
+    valid = (first > 2) & (first < h * 0.9)
+    if valid.mean() < MIN_VALID_COLUMNS:
+        return None
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    green = (g > r + 8) & (g > b + 4)
+    rows = np.arange(h)[:, None]
+    built = (rows > first[None, :]) & ~green
+    cols = np.flatnonzero(valid)
+    vfov = hfov * h / width
+    return {"az": (cols + 0.5 - width / 2) / width * hfov, "el": (h / 2 - np.arange(h) - 0.5) / h * vfov,
+            "built": built[:, cols]}
+
+
+def render_built(rel_xy: np.ndarray, heights: np.ndarray, eye_m: float) -> np.ndarray:
+    """Panorama (azimuth x elevation cells) of where buildings are seen from eye height:
+    each wall point covers from its base to its roof, and nearby walls are widened to
+    close the gaps between footprint points (~8 m apart). Union over buildings, so a short
+    block in front and a tall one behind both count, and open ground between stays open."""
+    n_az = int(360 / PANO_STEP)
+    n_el = int(-2 * PANO_EL_MIN / PANO_STEP)
+    d = np.hypot(rel_xy[:, 0], rel_xy[:, 1])
+    ok = d >= MIN_DIST_M
+    d, x, y, hh = d[ok], rel_xy[ok, 0], rel_xy[ok, 1], heights[ok]
+    az = (np.degrees(np.arctan2(x, y)) % 360) / PANO_STEP
+    lo = np.clip(((np.degrees(np.arctan2(-eye_m, d)) - PANO_EL_MIN) / PANO_STEP).astype(int), 0, n_el - 1)
+    hi = np.clip(((np.degrees(np.arctan2(hh - eye_m, d)) - PANO_EL_MIN) / PANO_STEP).astype(int) + 1, 0, n_el)
+    width = np.clip(np.ceil(np.degrees(8.0 / d) / PANO_STEP).astype(int), 1, 40)
+    diff = np.zeros((n_az, n_el + 1), dtype=np.int32)
+    keep = hi > lo
+    for k in range(int(width.max()) if len(width) else 0):
+        m = keep & (width > k)
+        ai = (az[m].astype(int) + k - width[m] // 2) % n_az
+        np.add.at(diff, (ai, lo[m]), 1)
+        np.add.at(diff, (ai, hi[m]), -1)
+    return np.cumsum(diff, axis=1)[:, :n_el] > 0
+
+
+def view_overlap(scene: dict, pano: np.ndarray, heading: float, tilt: float) -> float:
+    """Intersection-over-union of 'built' cells between the photo and a rendered view."""
+    n_az, n_el = pano.shape
+    ai = (np.round((heading + scene["az"]) / PANO_STEP).astype(int)) % n_az
+    ei = np.round((scene["el"] + tilt - PANO_EL_MIN) / PANO_STEP).astype(int)
+    inside = (ei >= 0) & (ei < n_el)
+    rendered = np.zeros_like(scene["built"])
+    rendered[inside] = pano[ai][:, ei[inside]].T  # (rows, columns), like the photo
+    photo = scene["built"]
+    union = (photo | rendered).sum()
+    return float((photo & rendered).sum() / union) if union else 0.0
