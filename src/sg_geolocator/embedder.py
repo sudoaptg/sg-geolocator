@@ -85,9 +85,28 @@ class PlaceEmbedder:
         self.model_name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         _trust_hub_repos(torch, ["gmberton_eigenplaces", "gmberton_cosplace"])
-        self.model = torch.hub.load(
-            "gmberton/eigenplaces", "get_trained_model", backbone=backbone, fc_output_dim=int(dim), trust_repo=True
-        ).to(self.device).eval()
+        # Use the local torch.hub copy when present (e.g. unpacked from the models release):
+        # loading by GitHub name re-checks the repo online, which fails without GitHub API access.
+        hub = Path(torch.hub.get_dir())
+        if (hub / "gmberton_eigenplaces_main").is_dir() and (hub / "gmberton_cosplace_main").is_dir():
+            original = torch.hub.load
+
+            def local_load(repo, *args, **kwargs):  # EigenPlaces itself loads CosPlace by name
+                if isinstance(repo, str) and repo.startswith("gmberton/"):
+                    kwargs.pop("trust_repo", None)
+                    return original(str(hub / (repo.replace("/", "_") + "_main")), *args, source="local", **kwargs)
+                return original(repo, *args, **kwargs)
+
+            torch.hub.load = local_load
+            try:
+                self.model = local_load("gmberton/eigenplaces", "get_trained_model", backbone=backbone,
+                                        fc_output_dim=int(dim))
+            finally:
+                torch.hub.load = original
+        else:
+            self.model = torch.hub.load("gmberton/eigenplaces", "get_trained_model", backbone=backbone,
+                                        fc_output_dim=int(dim), trust_repo=True)
+        self.model = self.model.to(self.device).eval()
         self._mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
         self._std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
