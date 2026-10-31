@@ -132,7 +132,7 @@ class Geolocator:
         label, _ = nearest_landmark(lat, lon)
         return Prediction(float(lat), float(lon), float(conf), "map-match", f"near {label}", seen)
 
-    def _viewpoint(self, path, pred: Prediction, sign_x: float | None = None) -> Prediction:
+    def _viewpoint(self, path, pred: Prediction, sign_x: float | None = None, sign_y: float | None = None) -> Prediction:
         """Once a sign places the photo near a landmark, find the exact viewpoint and floor
         by matching the skyline against buildings within a few hundred metres of it."""
         if self._buildings is None:
@@ -140,7 +140,8 @@ class Geolocator:
         from .geo import haversine_km
         from .skyline import viewpoint
 
-        v = viewpoint(self._buildings, path, pred.lat, pred.lon, radius_m=VIEWPOINT_RADIUS_M, landmark_x=sign_x)
+        v = viewpoint(self._buildings, path, pred.lat, pred.lon, radius_m=VIEWPOINT_RADIUS_M, landmark_x=sign_x,
+                      landmark_y=sign_y)
         if v is None or v["cost"] > VIEWPOINT_DISTINCT * v["typical_cost"]:
             return pred  # no clear skyline, or no spot fits clearly better than the rest
         dist = haversine_km(pred.lat, pred.lon, v["lat"], v["lon"]) * 1000
@@ -148,12 +149,17 @@ class Geolocator:
         floors = f"floor ~{v['floor']}" + (f" (fits {lo}-{hi})" if hi > lo else "")
         where = f"{v['block']}, " if v.get("block") else ""
         ranked = v.get("ranked") or []
-        also = ("; ranked: " + ", ".join(f"{r['block']} floor ~{r['floor']} ({r['cost']:.2f}°)" for r in ranked)
-                if len(ranked) > 1 else "")
-        pred.evidence.append(
-            f"viewpoint from skyline: {where}{floors}, {dist:.0f} m from the landmark, facing {v['heading']:.0f}°{also} "
-            f"(outline error {v['cost']:.2f}° vs typical {v['typical_cost']:.2f}°; near-equal spots within "
-            f"{v['spread_m']:.0f} m)")
+        if len(ranked) > 1:
+            # Neighbouring blocks often fit about equally well: report them all, with the
+            # range of floors they suggest, rather than claiming one exact block.
+            blocks = " / ".join(r["block"].removeprefix("Blk ") for r in ranked)
+            fl = [r["floor"] for r in ranked]
+            pred.evidence.append(f"likely viewpoint: one of Blk {blocks}, floors ~{min(fl)}-{max(fl)} "
+                                 f"(best fit {ranked[0]['block']} floor ~{ranked[0]['floor']}, facing {v['heading']:.0f}°)")
+        else:
+            pred.evidence.append(f"likely viewpoint: {where}{floors}, facing {v['heading']:.0f}°")
+        pred.evidence.append(f"viewpoint detail: {dist:.0f} m from the landmark; outline error {v['cost']:.2f}° "
+                             f"vs typical {v['typical_cost']:.2f}°")
         return Prediction(v["lat"], v["lon"], pred.confidence, "text+skyline", pred.label, pred.evidence)
 
     def predict(self, path: str | Path) -> Prediction | None:
@@ -172,8 +178,8 @@ class Geolocator:
             if found and found.confidence >= CLUE_THRESHOLD:
                 label, _ = nearest_landmark(found.lat, found.lon)
                 pred = Prediction(found.lat, found.lon, found.confidence, "text", f"near {label}", found.evidence)
-                sign_x = next((c.x for c in found.clues if c.kind == "place" and c.x is not None), None)
-                return self._viewpoint(path, pred, sign_x)
+                sign = next(((c.x, c.y) for c in found.clues if c.kind == "place" and c.x is not None), (None, None))
+                return self._viewpoint(path, pred, *sign)
             if visual is not None and texts:  # show what was read, so misses can be diagnosed
                 visual.evidence.append("text read, no match: " + ", ".join(repr(t) for t in texts[:8]))
         return visual

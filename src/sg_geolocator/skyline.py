@@ -245,15 +245,16 @@ def match_cost(profile: np.ndarray, az: np.ndarray, el: np.ndarray) -> float:
     return match(profile, az, el)[0]
 
 
-def match(profile: np.ndarray, az: np.ndarray, el: np.ndarray, headings: np.ndarray | None = None) -> tuple[float, float]:
-    """(lowest median error in degrees, the camera heading that gives it, 0 = north), over
-    `headings` (default: all)."""
+def match(profile: np.ndarray, az: np.ndarray, el: np.ndarray, headings: np.ndarray | None = None):
+    """(lowest median error in degrees, the camera heading that gives it (0 = north), the
+    camera tilt: true elevation = elevation in the photo + tilt), over `headings`
+    (default: all)."""
     HEADINGS_DEG = _HEADINGS if headings is None else headings
     bins = (np.round(HEADINGS_DEG[:, None] + az[None, :]).astype(int)) % AZ_BINS
     diff = profile[bins] - el[None, :]  # (headings, columns)
     costs = np.median(np.abs(diff[:, :, None] - PITCH_RANGE_DEG[None, None, :]), axis=1)
-    h, _ = np.unravel_index(costs.argmin(), costs.shape)
-    return float(costs.min()), float(HEADINGS_DEG[h])
+    h, t = np.unravel_index(costs.argmin(), costs.shape)
+    return float(costs.min()), float(HEADINGS_DEG[h]), float(PITCH_RANGE_DEG[t])
 
 
 def _best_cost(buildings: Buildings, lat: float, lon: float, az, el, min_points: int = 50) -> float | None:
@@ -345,7 +346,7 @@ MIN_VIEW_STOREYS = 5  # elevated window views: low-rise buildings (carparks, sho
 
 
 def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: float = 600.0,
-              landmark_x: float | None = None) -> dict | None:
+              landmark_x: float | None = None, landmark_y: float | None = None) -> dict | None:
     """Where exactly, and how high, a photo was taken, given a place it shows (e.g. a school
     whose sign was read) at (lat, lon). Searches positions within `radius_m` on a 50 m grid
     at a few heights, refines the best ones on a 15 m grid, then tries every floor at the
@@ -359,6 +360,13 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
     # The landmark is in the photo, so the camera faced it: only headings that keep it in
     # the frame are tried (without this, spots looking away from it can fit by chance).
     hfov = 2 * float(np.abs(az).max()) if isinstance(photo, tuple) else photo_hfov(photo)
+    sign_el = None  # elevation of the sign in the photo, degrees above the image centre
+    if landmark_y is not None and not isinstance(photo, tuple):
+        from PIL import Image
+
+        w, h = Image.open(photo).size
+        vfov = 2 * np.degrees(np.arctan(np.tan(np.radians(hfov / 2)) * h / w))
+        sign_el = (0.5 - landmark_y) * vfov
     cache: dict = {}
 
     def facing_landmark(la, lo):
@@ -392,7 +400,8 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
 
     blocks = buildings.addressed_near(lat, lon, radius_m)
     if blocks:
-        return _facade_search(buildings, blocks, az, el, facing_landmark, typical_from=(lat, lon, radius_m, cost, grid))
+        return _facade_search(buildings, blocks, az, el, facing_landmark, typical_from=(lat, lon, radius_m, cost, grid),
+                              sign_el=sign_el)
 
     coarse = []
     for la, lo in grid(lat, lon, radius_m, 50.0):
@@ -428,7 +437,30 @@ def viewpoint(buildings: Buildings, photo, lat: float, lon: float, radius_m: flo
             "typical_cost": typical, "spread_m": spread, "floor_range": (floors[0], floors[-1])}
 
 
-def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typical_from) -> dict | None:
+FLOOR_TOLERANCE = 3  # floors: how far the skyline floor may be from the sign's height line
+
+
+def _sign_height(buildings: Buildings, lat: float, lon: float) -> float:
+    """Roughly how high a landmark's sign is: the top of its tallest building nearby."""
+    _, hs = buildings.near(lat, lon, radius_m=60.0)
+    return float(hs.max()) if len(hs) else 15.0
+
+
+def _line_of_sight(buildings: Buildings, la, lo, eye, own, lat0, lon0, target_h, skip_end_m=40.0) -> bool:
+    """True if nothing stands between the window and the landmark's sign: no building
+    (other than our own, or the landmark's own buildings near the end) rises above the
+    straight line from eye to sign."""
+    d = float(np.hypot((lat0 - la) * M_PER_DEG, (lon0 - lo) * M_PER_DEG * COS_LAT))
+    for t in np.arange(15.0, d - skip_end_m, 10.0):
+        f = t / d
+        sel, _ = buildings._select(la + (lat0 - la) * f, lo + (lon0 - lo) * f, 8.0)
+        sel = sel[buildings.ids[sel] != own]
+        if len(sel) and buildings.heights[sel].max() > eye + (target_h - eye) * f:
+            return False
+    return True
+
+
+def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typical_from, sign_el=None) -> dict | None:
     """Viewpoint search on the walls of addressed buildings (a window photo is taken from
     one): positions every ~16 m along each footprint, the building itself left out of the
     rendered skyline, and only floors it has."""
@@ -476,8 +508,24 @@ def _facade_search(buildings: Buildings, blocks: list[int], az, el, facing, typi
         for f in range(1, n + 1):
             c = cost(la, lo, f * FLOOR_M + EYE_ABOVE_FLOOR_M, b)
             if c:
-                results.append((c[0], la, lo, f, c[1], b))
+                results.append((c[0], la, lo, f, c[1], b, c[2]))
     results.sort(key=lambda x: x[0])
+    # Draw lines to the landmark: (1) the sign's height in the photo fixes how high the
+    # camera is for a given distance; (2) the sign must be visible from the window.
+    if sign_el is not None:
+        sign_h = _sign_height(buildings, lat0, lon0)
+        kept = []
+        for r in results:
+            _, la, lo, f, _, b, tilt = r
+            d = float(np.hypot((lat0 - la) * M_PER_DEG, (lon0 - lo) * M_PER_DEG * COS_LAT))
+            eye_pred = sign_h - d * np.tan(np.radians(sign_el + tilt))
+            if abs(f - (eye_pred - EYE_ABOVE_FLOOR_M) / FLOOR_M) > FLOOR_TOLERANCE:
+                continue
+            if not _line_of_sight(buildings, la, lo, f * FLOOR_M + EYE_ABOVE_FLOOR_M, b, lat0, lon0, sign_h):
+                continue
+            kept.append(r)
+        if kept:
+            results = kept
     best = results[0]
     close = [r for r in results if r[0] <= best[0] * 1.1 + 0.02]
     same = [r for r in close if r[5] == best[5]]

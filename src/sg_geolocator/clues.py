@@ -71,6 +71,7 @@ class Clue:
     confidence: float
     detail: str = ""
     x: float | None = None  # where the text sits across the photo (0 = left edge, 1 = right)
+    y: float | None = None  # and down it (0 = top, 1 = bottom)
 
 
 @dataclass
@@ -104,19 +105,19 @@ class TextReader:
         self.engine = RapidOCR()
         self.min_score = min_score
 
-    def _run(self, img, left: int = 0) -> list[tuple[str, float]]:
-        """(text, x of the box centre in full-image pixels)."""
+    def _run(self, img, left: int = 0, top: int = 0) -> list[tuple[str, float, float]]:
+        """(text, x, y of the box centre in full-image pixels)."""
         import numpy as np
 
         result, _ = self.engine(np.asarray(img)[:, :, ::-1])  # RapidOCR expects BGR
-        return [(text, left + float(np.mean([p[0] for p in box])))
+        return [(text, left + float(np.mean([p[0] for p in box])), top + float(np.mean([p[1] for p in box])))
                 for box, text, score in (result or []) if float(score) >= self.min_score]
 
     def read(self, path: str | Path) -> list[str]:
         return list(self.read_positions(path))
 
-    def read_positions(self, path: str | Path) -> dict[str, float]:
-        """Text -> where it sits across the photo (0 = left edge, 1 = right edge)."""
+    def read_positions(self, path: str | Path) -> dict[str, tuple[float, float]]:
+        """Text -> where it sits in the photo as (x, y) fractions (0, 0 = top left)."""
         from PIL import Image
 
         img = Image.open(path).convert("RGB")
@@ -127,10 +128,10 @@ class TextReader:
         if max(img.size) > self.TILE * 1.5:
             for top in _starts(img.height, self.TILE, self.STEP):
                 for left in _starts(img.width, self.TILE, self.STEP):
-                    found += self._run(img.crop((left, top, left + self.TILE, top + self.TILE)), left)
-        out: dict[str, float] = {}
-        for text, x in found:
-            out.setdefault(text, x / img.width)
+                    found += self._run(img.crop((left, top, left + self.TILE, top + self.TILE)), left, top)
+        out: dict[str, tuple[float, float]] = {}
+        for text, x, y in found:
+            out.setdefault(text, (x / img.width, y / img.height))
         return out
 
 
@@ -338,7 +339,7 @@ class ClueLocator:
                 self._roads = False  # offline: fall back to OneMap street lookups
         return self._roads or None
 
-    def _places(self, texts: list[str], prior, positions: dict[str, float] | None = None) -> list[Clue]:
+    def _places(self, texts: list[str], prior, positions: dict[str, tuple[float, float]] | None = None) -> list[Clue]:
         """Named schools, malls, CCs ... read on signs. OSM supplies the (fuzzy-matched)
         official name; OneMap, when it knows that name, the current location (OSM can lag
         behind a school's move)."""
@@ -360,7 +361,8 @@ class ClueLocator:
             cands = list({(round(c[0], 3), round(c[1], 3)): c for c in cands}.values())
             best = _closest(cands, prior)
             detail = best[2] if len(cands) == 1 else f"{best[2]} (closest to the visual guess of {len(cands)} places with this name)"
-            out.append(Clue("place", line, best[0], best[1], CONFIDENCE["place"], detail, (positions or {}).get(line)))
+            x, y = (positions or {}).get(line, (None, None))
+            out.append(Clue("place", line, best[0], best[1], CONFIDENCE["place"], detail, x, y))
         # The same place read in several boxes counts once.
         return list({(c.lat, c.lon): c for c in out}.values())
 
@@ -368,7 +370,7 @@ class ClueLocator:
         return self.locate_text(self.reader.read(path), prior)
 
     def locate_text(self, texts: list[str], prior: tuple[float, float] | None = None,
-                    positions: dict[str, float] | None = None) -> ClueResult | None:
+                    positions: dict[str, tuple[float, float]] | None = None) -> ClueResult | None:
         """Resolve OCR lines to a location. `prior` (a rough visual guess) breaks ties
         between same-named places, e.g. the many 'Blk 123's."""
         found = extract(texts)
