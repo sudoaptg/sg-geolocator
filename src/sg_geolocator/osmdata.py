@@ -65,7 +65,9 @@ def _named(tags) -> list[str]:
     """The place's names worth matching on signs: the main name plus its English and Chinese
     names (Chinatown and estate signs are often in Chinese, e.g. People's Park Complex is
     signed 珍珠坊)."""
-    if not any(tags.get(k) in v for k, v in NAMED_TESTS.items()):
+    # Places of the listed kinds, plus any named building (complexes such as People's Park
+    # Complex are often plain building=yes).
+    if not (any(tags.get(k) in v for k, v in NAMED_TESTS.items()) or "building" in tags):
         return []
     return list(dict.fromkeys(n for n in (tags.get(k) for k in ("name", "name:en", "name:zh", "name:zh-Hans")) if n))
 
@@ -143,7 +145,7 @@ def extract(pbf: str | Path, log=print) -> dict:
 
 def load(log=print) -> dict:
     """Singapore features from the Geofabrik extract (downloaded and parsed once, cached)."""
-    cache = CACHE_PATH.parent / "osm_features_v3.pkl.gz"  # v3: named places with Chinese names
+    cache = CACHE_PATH.parent / "osm_features_v4.pkl.gz"  # v4: also every named building
     if cache.exists():
         with gzip.open(cache, "rb") as f:
             return pickle.load(f)
