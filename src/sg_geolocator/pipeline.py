@@ -140,8 +140,11 @@ class Geolocator:
         visual = self.visual(path)
         if self._clues is not None:
             prior = (visual.lat, visual.lon) if visual else None
-            found = self._clues.locate(path, prior)
+            texts = self._clues.reader.read(path)
+            found = self._clues.locate_text(texts, prior)
             if found and found.confidence >= CLUE_THRESHOLD:
                 label, _ = nearest_landmark(found.lat, found.lon)
                 return Prediction(found.lat, found.lon, found.confidence, "text", f"near {label}", found.evidence)
+            if visual is not None and texts:  # show what was read, so misses can be diagnosed
+                visual.evidence.append("text read, no match: " + ", ".join(repr(t) for t in texts[:8]))
         return visual
