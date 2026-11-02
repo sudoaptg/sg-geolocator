@@ -58,18 +58,55 @@ def angle_from_x(x, hfov_deg: float):
 # --------------------------------------------------------------------------- photo side
 
 
-def photo_edges(path, width: int = 600, side: int = 4, smooth: int = 15, contrast: float = 12.0,
-                min_run: float = 0.12, sep: float = 0.012) -> np.ndarray:
-    """Columns (0..1 across) of long vertical edges: building sides and tower outlines.
+def photo_edges(path, width: int = 600, sep: float = 0.012) -> np.ndarray:
+    """Columns (0..1 across) of building outline edges in the photo.
 
-    An edge is a column where the brightness to its left and right differs the same way
-    over a long vertical stretch (averaged over `side` pixels each side and `smooth` rows,
-    so a facade's window grid, which flips back and forth, does not count)."""
+    By day, the clearest edges are where the skyline jumps (one building ends, the next
+    starts higher or lower); hazy towers against a pale sky have too little contrast for
+    anything else. At night the sky outline is broken up by lit windows, so long vertical
+    brightness steps (building sides against the dark sky or each other) are used."""
     from PIL import Image
+
+    from .skyline import _sky_boundary_day, _sky_boundary_night
 
     img = Image.open(path).convert("L")
     h = int(round(img.height * width / img.width))
     a = np.asarray(img.resize((width, h)), dtype=np.float32)
+    day = np.median(a[: max(2, h // 10)]) > 90
+    cols = list(_contrast_edges(a))
+    if day:
+        cols = list(_skyline_jumps(a, _sky_boundary_day(a))) + cols
+    picked: list[int] = []
+    for col in cols:  # skyline jumps first (most reliable), then drop close neighbours
+        if width * 0.01 < col < width * 0.99 and all(abs(col - p) > sep * width for p in picked):
+            picked.append(int(col))
+    return np.sort((np.array(picked, dtype=float) + 0.5) / width)
+
+
+def _skyline_jumps(a: np.ndarray, first: np.ndarray, jump: float = 0.012) -> np.ndarray:
+    """Columns where the sky outline steps up or down, biggest steps first."""
+    h, width = a.shape
+    f = first.astype(float)
+    f[(first <= 2) | (first >= h * 0.9)] = np.nan
+    pad = np.pad(f, 2, constant_values=np.nan)
+    stack = np.stack([pad[i : i + width] for i in range(5)])
+    with np.errstate(all="ignore"):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            fm = np.nanmedian(stack, axis=0)
+    d = np.nan_to_num(np.r_[0, np.abs(fm[2:] - fm[:-2]), 0])
+    cand = np.flatnonzero(d > jump * h)
+    return cand[np.argsort(-d[cand])]
+
+
+def _contrast_edges(a: np.ndarray, side: int = 4, smooth: int = 15, contrast: float = 12.0,
+                    min_run: float = 0.12) -> np.ndarray:
+    """Columns where the brightness to the left and right differs the same way over a long
+    vertical stretch (averaged over `side` pixels each side and `smooth` rows, so a facade's
+    window grid, which flips back and forth, does not count), longest first."""
+    h, width = a.shape
     c = np.cumsum(np.pad(a, ((0, 0), (1, 0))), axis=1)
     i = np.arange(side, width - side)
     step = np.zeros_like(a)
@@ -84,12 +121,7 @@ def photo_edges(path, width: int = 600, side: int = 4, smooth: int = 15, contras
             run = np.maximum(run, cur)
     strength = np.abs(sm).mean(0)
     cand = np.flatnonzero(run >= min_run * h)
-    cand = cand[(cand > width * 0.01) & (cand < width * 0.99)]
-    picked: list[int] = []
-    for col in cand[np.lexsort((-strength[cand], -run[cand]))]:  # longest first, then drop close neighbours
-        if all(abs(col - p) > sep * width for p in picked):
-            picked.append(int(col))
-    return np.sort((np.array(picked, dtype=float) + 0.5) / width)
+    return cand[np.lexsort((-strength[cand], -run[cand]))]
 
 
 # --------------------------------------------------------------------------- map side
@@ -179,11 +211,50 @@ def edge_f1(photo_x: np.ndarray, map_x: np.ndarray, tol: float = EDGE_TOL) -> fl
 # --------------------------------------------------------------------------- stage 1
 
 
+def _f1_all_headings(edges_az: np.ndarray, photo_x: np.ndarray, hfov: float) -> np.ndarray:
+    """edge_f1 for every heading on the BIN_DEG grid at once (circular correlations by
+    FFT). Same Gaussian closeness as edge_f1, with tolerance turned into degrees at the
+    photo centre; overlapping matches are summed and capped at 1."""
+    n = int(round(360 / BIN_DEG))
+    if not len(edges_az) or not len(photo_x):
+        return np.zeros(n)
+    sigma = (EDGE_TOL / 2) * 2 * np.tan(np.radians(hfov / 2)) * 180 / np.pi / BIN_DEG  # in bins
+    k = np.arange(-int(4 * sigma) - 1, int(4 * sigma) + 2)
+    g = np.zeros(n)
+    g[k % n] = np.exp(-0.5 * (k / sigma) ** 2)
+    G = np.fft.rfft(g)
+    m = np.zeros(n)
+    np.add.at(m, np.round(np.asarray(edges_az) / BIN_DEG).astype(int) % n, 1.0)
+    p = np.zeros(n)
+    np.add.at(p, np.round(angle_from_x(photo_x, hfov) / BIN_DEG).astype(int) % n, 1.0)
+    half = int(round(hfov / 2 / BIN_DEG))
+    box = np.zeros(n)
+    box[np.arange(-half, half + 1) % n] = 1.0
+    M, P_, Bx = np.fft.rfft(m), np.fft.rfft(p), np.fft.rfft(box)
+    corr = lambda A, Bf: np.fft.irfft(A * np.conj(Bf), n)  # out[h] = sum_j a[h + j] b[j]
+    blurred_map = np.minimum(np.fft.irfft(M * G, n), 1.0)
+    recall = corr(np.fft.rfft(blurred_map), P_) / len(photo_x)
+    blurred_photo = np.minimum(np.fft.irfft(P_ * G, n), 1.0)
+    count = np.maximum(corr(M, Bx), 1e-9)
+    prec = np.minimum(corr(M, np.fft.rfft(blurred_photo)) / count, 1.0)
+    recall = np.clip(recall, 0, 1)
+    prec = np.where(count > 0.5, np.clip(prec, 0, 1), 0.0)
+    return np.where(recall + prec > 0, 2 * recall * prec / np.maximum(recall + prec, 1e-9), 0.0)
+
+
 def _score_spot(outlines: Outlines, cam, photo_x, landmarks, hfovs, headings, lm_scale):
-    """Best (score, heading, hfov, f1, landmark error) at one spot."""
+    """Best (score, heading, hfov, f1, landmark error) at one spot. `headings=None` tries
+    every heading (BIN_DEG apart) in one go."""
     edges = outlines.edges(cam)
     best = (-np.inf, 0.0, 0.0, 0.0, 0.0)
     lm_dirs = [lm.direction(cam, outlines) for lm in landmarks]
+    if not landmarks and headings is None:
+        for hfov in hfovs:
+            f1 = _f1_all_headings(edges, photo_x, hfov)
+            i = int(np.argmax(f1))
+            if f1[i] > best[0]:
+                best = (float(f1[i]), float(i * BIN_DEG), float(hfov), float(f1[i]), 0.0)
+        return best
     for hfov in hfovs:
         if landmarks:
             hs = [lm_dirs[0] - angle_from_x(landmarks[0].x, hfov)]
@@ -205,7 +276,7 @@ def _score_spot(outlines: Outlines, cam, photo_x, landmarks, hfovs, headings, lm
 
 def resect(buildings: Buildings, photo_x, lat: float, lon: float, radius_m: float = 300.0,
            landmarks: list[Landmark] | None = None, hfovs=None, step_m: float = 4.0,
-           heading_step: float = 1.0, min_height: float = 20.0, top: int = 5, log=None) -> list[dict]:
+           min_height: float = 20.0, top: int = 5, log=None) -> list[dict]:
     """Stage 1: the spots (within `radius_m` of lat, lon) whose plan-view outline edges best
     line up with `photo_x`, plus any landmark directions. Returns the best `top` distinct
     spots, each refined, with lat, lon, heading, hfov, the edge match (0-1) and the mean
@@ -218,7 +289,7 @@ def resect(buildings: Buildings, photo_x, lat: float, lon: float, radius_m: floa
     k = int(radius_m // step_m)
     grid = [c + (i * step_m, j * step_m) for i in range(-k, k + 1) for j in range(-k, k + 1)
             if (i * i + j * j) * step_m * step_m <= radius_m * radius_m]
-    headings = np.arange(0, 360, heading_step)
+    headings = None  # every heading, scored at once
     lm_scale = 0.05  # a landmark 5% of the width off costs as much as the whole edge match
     scored = []
     for n, cam in enumerate(grid):
