@@ -95,6 +95,20 @@ def main(argv: list[str] | None = None) -> int:
     bn = sub.add_parser("build-names", help="Gazetteer of named places (schools, malls, CCs...) for sign reading")
     bn.add_argument("--out", default="place_names.json.gz")
 
+    rs = sub.add_parser("resect", help="Where and which way a photo was taken: plan-view outline match first, height second")
+    rs.add_argument("image")
+    rs.add_argument("--buildings", required=True)
+    rs.add_argument("--near", help="lat,lon or a place name to search around (default: the first landmark)")
+    rs.add_argument("--radius", type=float, default=250.0, help="Search this many metres around --near")
+    rs.add_argument("--landmark", action="append", default=[],
+                    help="NAME[:left|right|centre]=X: something recognised in the photo and its column X (pixels, or 0-1 "
+                         "across). NAME is lat,lon, a building address ('60 Robinson Road') or a place name. Repeatable.")
+    rs.add_argument("--hfov", type=float, help="Horizontal field of view in degrees (default: EXIF, else 45-95 searched)")
+    rs.add_argument("--step", type=float, default=4.0, help="Spot spacing in metres")
+    rs.add_argument("--min-height", type=float, default=20.0, help="Ignore buildings lower than this (metres) in the outline")
+    rs.add_argument("--names", help="place_names.json.gz (to resolve place names)")
+    rs.add_argument("--top", type=int, default=5)
+
     sa = sub.add_parser("search-area", help="Find a photo's spot inside an area narrowed down by hints (bus, MRT line, area)")
     sa.add_argument("image")
     sa.add_argument("--buildings", required=True)
@@ -262,6 +276,39 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(names.entries)} named places -> {args.out} (copy to ~/.cache/sg_geolocator/ to use)")
         return 0
 
+    if args.cmd == "resect":
+        from PIL import Image
+
+        from . import plan2d
+        from .skyline import Buildings, _exif_hfov
+
+        b = Buildings.load(args.buildings)
+        names = None
+        if args.names:
+            from .placenames import PlaceNames
+
+            names = PlaceNames.load(args.names)
+        width = Image.open(args.image).width
+        landmarks = [_parse_landmark(t, b, names, width) for t in args.landmark]
+        if args.near:
+            lat, lon = _resolve_area(args.near, None, names)
+        elif landmarks:
+            lat, lon = landmarks[0].lat, landmarks[0].lon
+        else:
+            raise SystemExit("give --near or at least one --landmark")
+        hfov = args.hfov or _exif_hfov(Image.open(args.image))
+        hfovs = [hfov] if hfov else list(range(45, 96, 5))
+        edges = plan2d.photo_edges(args.image)
+        print(f"{len(edges)} vertical edges in the photo; searching {args.radius:.0f} m around {lat:.5f},{lon:.5f}",
+              file=sys.stderr)
+        spots = plan2d.resect(b, edges, lat, lon, args.radius, landmarks, hfovs, args.step, min_height=args.min_height,
+                              top=args.top, log=lambda m: print(m, file=sys.stderr))
+        for s_ in spots:  # stage 2: height, now that the spot and heading are fixed
+            s_["height"] = plan2d.fit_height(b, args.image, s_["lat"], s_["lon"], s_["heading"], s_["hfov"])
+            s_["map"] = f"https://www.google.com/maps?q={s_['lat']},{s_['lon']}"
+        print(json.dumps({"image": args.image, "photo_edges": [round(float(x), 4) for x in edges], "spots": spots}))
+        return 0
+
     if args.cmd == "search-area":
         import numpy as np
 
@@ -383,6 +430,29 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.md_out, "w") as fh:
             fh.write(md)
     return 0
+
+
+def _parse_landmark(text: str, buildings, names, width: int):
+    """'NAME[:part]=X' -> plan2d.Landmark. NAME: 'lat,lon', a building address, or a place name."""
+    from . import plan2d
+
+    if "=" not in text:
+        raise SystemExit(f"landmark needs =column: {text!r}")
+    name, x = text.rsplit("=", 1)
+    part = "centre"
+    if ":" in name and name.rsplit(":", 1)[1] in ("left", "right", "centre", "center"):
+        name, part = name.rsplit(":", 1)
+        part = "centre" if part == "center" else part
+    x = float(x)
+    x = x / width if x > 1 else x
+    key = name.strip().lower()
+    for i, label in enumerate(buildings.labels):  # a building address: use its outline
+        if label and (label.lower() == key or label.lower() == "blk " + key):
+            pts, _ = buildings.footprint(i)
+            c = pts.mean(0)
+            return plan2d.Landmark(x, float(c[0]), float(c[1]), part, building=i)
+    lat, lon = _resolve_area(name, None, names)
+    return plan2d.Landmark(x, lat, lon, part)
 
 
 def _resolve_area(text: str, transit, names) -> tuple[float, float]:

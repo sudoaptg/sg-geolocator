@@ -1,0 +1,301 @@
+"""Find where a photo was taken in two stages: the plan view first, the height second.
+
+Stage 1 (plan view) uses only directions, which a photo gives reliably: each vertical
+building edge in the photo is a direction left or right of the centre. From any candidate
+spot on the map, the building outlines you would see first in each direction (nearer ones
+hiding farther ones) give the same kind of list. The spot, heading and field of view that
+line the two lists up win. A recognised landmark ("Lau Pa Sat is at column 545") pins
+the heading and makes the search far sharper.
+
+Stage 2 (height) runs only once the spot and heading are fixed: the eye height (floor) and
+camera tilt are then the only unknowns, read from where the skyline sits in the photo.
+
+Splitting the two keeps height, tilt and lens guesses (and buildings missing a height in
+the map) from trading off against the position.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .skyline import COS_LAT, FLOOR_M, M_PER_DEG, Buildings, photo_skyline
+
+BIN_DEG = 0.2  # plan-view direction resolution
+EDGE_TOL = 0.012  # an edge matches if within this share of the photo width
+OWN_BUILDING_M = 4.0  # outlines this close belong to the building the photo is taken from
+EYE_ABOVE_FLOOR_M = 1.5
+
+
+def to_xy(lat, lon) -> np.ndarray:
+    """Metres east/north on the same grid as Buildings.xy."""
+    return np.stack([(np.asarray(lon) - 103.8) * M_PER_DEG * COS_LAT, (np.asarray(lat) - 1.35) * M_PER_DEG], -1)
+
+
+def to_latlon(xy) -> tuple[float, float]:
+    return float(1.35 + xy[1] / M_PER_DEG), float(103.8 + xy[0] / (M_PER_DEG * COS_LAT))
+
+
+def _bearing(v) -> np.ndarray:
+    v = np.asarray(v)
+    return np.degrees(np.arctan2(v[..., 0], v[..., 1])) % 360
+
+
+def _wrap(a):
+    return (np.asarray(a) + 180) % 360 - 180
+
+
+def x_from_angle(a_deg, hfov_deg: float):
+    """Photo column (0..1 across) of a direction `a_deg` right of the photo centre."""
+    return 0.5 + np.tan(np.radians(a_deg)) / (2 * np.tan(np.radians(hfov_deg / 2)))
+
+
+def angle_from_x(x, hfov_deg: float):
+    return np.degrees(np.arctan((np.asarray(x) - 0.5) * 2 * np.tan(np.radians(hfov_deg / 2))))
+
+
+# --------------------------------------------------------------------------- photo side
+
+
+def photo_edges(path, width: int = 600, side: int = 4, smooth: int = 15, contrast: float = 12.0,
+                min_run: float = 0.12, sep: float = 0.012) -> np.ndarray:
+    """Columns (0..1 across) of long vertical edges: building sides and tower outlines.
+
+    An edge is a column where the brightness to its left and right differs the same way
+    over a long vertical stretch (averaged over `side` pixels each side and `smooth` rows,
+    so a facade's window grid, which flips back and forth, does not count)."""
+    from PIL import Image
+
+    img = Image.open(path).convert("L")
+    h = int(round(img.height * width / img.width))
+    a = np.asarray(img.resize((width, h)), dtype=np.float32)
+    c = np.cumsum(np.pad(a, ((0, 0), (1, 0))), axis=1)
+    i = np.arange(side, width - side)
+    step = np.zeros_like(a)
+    step[:, i] = (c[:, i + side + 1] - c[:, i + 1] - (c[:, i] - c[:, i - side])) / side  # right minus left
+    cv = np.cumsum(np.pad(step, ((1, 0), (0, 0))), axis=0)
+    sm = (cv[smooth:] - cv[:-smooth]) / smooth
+    run = np.zeros(width)
+    for m in (sm > contrast, sm < -contrast):  # one consistent direction of change
+        cur = np.zeros(width)
+        for row in m:
+            cur = np.where(row, cur + 1, 0)
+            run = np.maximum(run, cur)
+    strength = np.abs(sm).mean(0)
+    cand = np.flatnonzero(run >= min_run * h)
+    cand = cand[(cand > width * 0.01) & (cand < width * 0.99)]
+    picked: list[int] = []
+    for col in cand[np.lexsort((-strength[cand], -run[cand]))]:  # longest first, then drop close neighbours
+        if all(abs(col - p) > sep * width for p in picked):
+            picked.append(int(col))
+    return np.sort((np.array(picked, dtype=float) + 0.5) / width)
+
+
+# --------------------------------------------------------------------------- map side
+
+
+class Outlines:
+    """Building footprints near an area, for plan-view sight lines."""
+
+    def __init__(self, buildings: Buildings, lat: float, lon: float, radius_m: float, min_height: float = 20.0):
+        sel, _ = buildings._select(lat, lon, radius_m)
+        ids = buildings.ids[sel]
+        keep = buildings.heights[sel] >= min_height
+        sel, ids = sel[keep], ids[keep]
+        order = np.argsort(ids, kind="stable")
+        sel, ids = sel[order], ids[order]
+        self.xy = buildings.xy[sel]
+        self.ids = ids
+        starts = np.flatnonzero(np.r_[True, ids[1:] != ids[:-1]])
+        self.starts, self.ends = starts, np.r_[starts[1:], len(ids)]
+        self.bid = ids[starts]
+
+    def edges(self, cam: np.ndarray, max_dist: float = 900.0) -> np.ndarray:
+        """Compass directions (degrees) where the nearest visible building changes, seen
+        from `cam` (metres, Buildings.xy grid)."""
+        if not len(self.starts):
+            return np.zeros(0)
+        rel = self.xy - cam
+        d = np.hypot(rel[:, 0], rel[:, 1])
+        dmin = np.minimum.reduceat(d, self.starts)
+        n_pts = self.ends - self.starts
+        cen = np.add.reduceat(rel, self.starts) / n_pts[:, None]
+        mid = _bearing(cen)
+        off = _wrap(_bearing(rel) - np.repeat(mid, n_pts))
+        lo = mid + np.minimum.reduceat(off, self.starts)
+        hi = mid + np.maximum.reduceat(off, self.starts)
+        ok = (dmin >= OWN_BUILDING_M) & (dmin <= max_dist) & (hi - lo < 180)
+        nbins = int(round(360 / BIN_DEG))
+        who = np.full(nbins, -1)
+        for k in np.flatnonzero(ok)[np.argsort(-dmin[ok])]:  # far first; nearer ones paint over
+            i0, i1 = int(np.floor(lo[k] / BIN_DEG)), int(np.ceil(hi[k] / BIN_DEG))
+            who[np.arange(i0, i1 + 1) % nbins] = k
+        change = np.flatnonzero(who != np.roll(who, 1))
+        return (change * BIN_DEG) % 360
+
+    def extent(self, building: int, cam: np.ndarray) -> tuple[float, float, float] | None:
+        """(left, centre, right) compass directions of one building seen from `cam`."""
+        k = np.flatnonzero(self.bid == building)
+        if not len(k):
+            return None
+        s, e = self.starts[k[0]], self.ends[k[0]]
+        a = _bearing(self.xy[s:e] - cam)
+        mid = _bearing(self.xy[s:e].mean(0) - cam)
+        off = _wrap(a - mid)
+        return float(mid + off.min()), float(mid), float(mid + off.max())
+
+
+@dataclass
+class Landmark:
+    """Something recognised in the photo: its column (0..1 across) and where it is.
+    `part` says which part of it sits at that column: its centre, left or right edge."""
+
+    x: float
+    lat: float
+    lon: float
+    part: str = "centre"
+    building: int | None = None  # with a building id, left/right use its outline
+
+    def direction(self, cam: np.ndarray, outlines: Outlines | None) -> float:
+        if self.building is not None and outlines is not None:
+            ext = outlines.extent(self.building, cam)
+            if ext:
+                return {"left": ext[0], "centre": ext[1], "right": ext[2]}[self.part]
+        return float(_bearing(to_xy(self.lat, self.lon) - cam))
+
+
+def edge_f1(photo_x: np.ndarray, map_x: np.ndarray, tol: float = EDGE_TOL) -> float:
+    """How well two lists of edge columns line up (0-1): an F1 score where each match
+    counts by closeness (Gaussian, sigma = tol / 2), so near-misses are graded rather than
+    all-or-nothing and ties between candidate spots are rare."""
+    if not len(photo_x) or not len(map_x):
+        return 0.0
+    w = np.exp(-0.5 * ((photo_x[:, None] - map_x[None, :]) / (tol / 2)) ** 2)
+    rec, prec = w.max(1).mean(), w.max(0).mean()
+    return float(2 * rec * prec / (rec + prec)) if rec + prec else 0.0
+
+
+# --------------------------------------------------------------------------- stage 1
+
+
+def _score_spot(outlines: Outlines, cam, photo_x, landmarks, hfovs, headings, lm_scale):
+    """Best (score, heading, hfov, f1, landmark error) at one spot."""
+    edges = outlines.edges(cam)
+    best = (-np.inf, 0.0, 0.0, 0.0, 0.0)
+    lm_dirs = [lm.direction(cam, outlines) for lm in landmarks]
+    for hfov in hfovs:
+        if landmarks:
+            hs = [lm_dirs[0] - angle_from_x(landmarks[0].x, hfov)]
+        else:
+            hs = headings
+        for hd in hs:
+            lm_err = 0.0
+            if landmarks:
+                xs = [x_from_angle(_wrap(dr - hd), hfov) for dr in lm_dirs]
+                lm_err = float(np.mean([abs(x - lm.x) for x, lm in zip(xs, landmarks)]))
+            rel = _wrap(edges - hd)
+            map_x = x_from_angle(rel[np.abs(rel) < hfov / 2], hfov)
+            f1 = edge_f1(photo_x, map_x)
+            score = f1 - lm_err / lm_scale
+            if score > best[0]:
+                best = (score, float(hd % 360), float(hfov), f1, lm_err)
+    return best
+
+
+def resect(buildings: Buildings, photo_x, lat: float, lon: float, radius_m: float = 300.0,
+           landmarks: list[Landmark] | None = None, hfovs=None, step_m: float = 4.0,
+           heading_step: float = 1.0, min_height: float = 20.0, top: int = 5, log=None) -> list[dict]:
+    """Stage 1: the spots (within `radius_m` of lat, lon) whose plan-view outline edges best
+    line up with `photo_x`, plus any landmark directions. Returns the best `top` distinct
+    spots, each refined, with lat, lon, heading, hfov, the edge match (0-1) and the mean
+    landmark error (share of the photo width)."""
+    landmarks = landmarks or []
+    photo_x = np.asarray(photo_x, float)
+    hfovs = list(hfovs) if hfovs is not None else list(np.arange(45, 96, 5.0))
+    outlines = Outlines(buildings, lat, lon, radius_m + 900, min_height)
+    c = to_xy(lat, lon)
+    k = int(radius_m // step_m)
+    grid = [c + (i * step_m, j * step_m) for i in range(-k, k + 1) for j in range(-k, k + 1)
+            if (i * i + j * j) * step_m * step_m <= radius_m * radius_m]
+    headings = np.arange(0, 360, heading_step)
+    lm_scale = 0.05  # a landmark 5% of the width off costs as much as the whole edge match
+    scored = []
+    for n, cam in enumerate(grid):
+        s = _score_spot(outlines, cam, photo_x, landmarks, hfovs, headings, lm_scale)
+        scored.append((s[0], n, s))
+        if log and n % 2000 == 0:
+            log(f"  {n}/{len(grid)} spots")
+    scored.sort(key=lambda r: -r[0])
+    out: list[dict] = []
+    for _, n, s in scored:
+        if any(np.hypot(*(grid[n] - to_xy(o["lat"], o["lon"]))) < 4 * step_m for o in out):
+            continue
+        cam, best = _refine(outlines, grid[n], s, photo_x, landmarks, step_m, lm_scale)
+        la, lo = to_latlon(cam)
+        out.append({"lat": round(la, 6), "lon": round(lo, 6), "heading": round(best[1], 1), "hfov": round(best[2], 1),
+                    "edge_match": round(best[3], 3), "landmark_error": round(best[4], 4), "score": round(best[0], 3)})
+        if len(out) == 3 * top:
+            break
+    out = sorted(out, key=lambda o: -o["score"])[:top]
+    all_scores = np.array([r[0] for r in scored])
+    for o in out:
+        o["typical_score"] = round(float(np.median(all_scores)), 3)
+    return out
+
+
+def _refine(outlines, cam, best, photo_x, landmarks, step_m, lm_scale):
+    """Local search around a grid winner: half-size spot steps, finer heading and hfov."""
+    cam = np.asarray(cam, float)
+    for scale in (0.5, 0.25):
+        moved = True
+        while moved:
+            moved = False
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)):
+                cand = cam + np.array([dx, dy]) * step_m * scale
+                hfovs = np.arange(best[2] - 4, best[2] + 4.1, 1.0)
+                headings = np.arange(best[1] - 2, best[1] + 2.01, 0.25)
+                s = _score_spot(outlines, cand, photo_x, landmarks, hfovs, headings, lm_scale)
+                if s[0] > best[0] + 1e-9:
+                    best, cam, moved = s, cand, (dx, dy) != (0, 0)
+    return cam, best
+
+
+# --------------------------------------------------------------------------- stage 2
+
+
+def fit_height(buildings: Buildings, photo, lat: float, lon: float, heading: float, hfov: float,
+               eyes=None, max_tilt: float = 15.0) -> dict | None:
+    """Stage 2: with the spot and heading fixed, the eye height (and camera tilt) that best
+    puts the map's building tops on the photo's skyline. None without a usable skyline."""
+    sky = photo_skyline(photo, hfov)
+    if sky is None:
+        return None
+    az, el = sky
+    eyes = np.arange(1.5, 150, 1.5) if eyes is None else np.asarray(eyes, float)
+    sel, p = buildings._select(lat, lon, 1500)
+    rel = buildings.xy[sel] - p
+    d = np.hypot(rel[:, 0], rel[:, 1])
+    hs = buildings.heights[sel]
+    own = set(buildings.ids[sel][d < OWN_BUILDING_M].tolist())
+    keep = (d > OWN_BUILDING_M) & ~np.isin(buildings.ids[sel], list(own))
+    rel, d, hs = rel[keep], d[keep], hs[keep]
+    a = _wrap(_bearing(rel) - heading)
+    cols = np.round(a / 0.5).astype(int)
+    want = np.round(az / 0.5).astype(int)
+    rows = []
+    for eye in eyes:
+        e = np.degrees(np.arctan2(hs - eye, d))
+        top = {}
+        m = np.isin(cols, want)
+        for c_, v in zip(cols[m], e[m]):
+            if v > top.get(c_, -90):
+                top[c_] = v
+        mp = np.array([top.get(c_, 0.0) for c_ in want])  # open sky: the horizon
+        tilt = float(np.clip(np.median(mp - el), -max_tilt, max_tilt))
+        rows.append((float(np.median(np.abs(mp - el - tilt))), float(eye), tilt))
+    rows.sort()
+    err, eye, tilt = rows[0]
+    near = [r for r in rows if r[0] <= err + 0.25]
+    return {"reliable": err < 1.5, "eye_m": eye, "floor": max(1, int(round((eye - EYE_ABOVE_FLOOR_M) / FLOOR_M)) + 1), "tilt_deg": round(tilt, 2),
+            "error_deg": round(err, 3), "eye_range_m": [min(r[1] for r in near), max(r[1] for r in near)]}

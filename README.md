@@ -53,6 +53,34 @@ The pipeline runs these stages and returns the most confident answer:
 Every prediction reports `lat`, `lon`, a confidence score, which stage produced it, a map link
 and, for text clues, the evidence (e.g. `bus_stop: '83139' -> Opp Telok Kurau Pr Sch, Telok Kurau Rd`).
 
+## Pinning the exact spot (plan view first, height second)
+
+Once the area is known, `resect` works out where the camera stood and which way it faced,
+in two stages:
+
+1. **Plan view (where and which way).** Long vertical edges in the photo (building sides,
+   tower outlines) are each a direction. From every candidate spot (every 4 m) the map gives
+   the same kind of list: where the nearest visible building outline changes, nearer
+   buildings hiding farther ones. The spot, heading and field of view that line the two
+   lists up win, then are refined. Anything you recognise in the photo (`--landmark`) pins
+   the heading and sharpens the search a lot. This stage needs building outlines only, not
+   heights, and no guess of camera tilt or horizon.
+2. **Height (floor).** With the spot and heading fixed, the eye height and camera tilt are
+   the only unknowns, read from where the map's building tops sit on the photo's skyline.
+   It is marked `"reliable": false` when the skyline does not fit (e.g. towers running out
+   of the top of the frame).
+
+```bash
+sg-geolocate resect photo.jpg --buildings buildings.npz --names place_names.json.gz \
+    --landmark "Lau Pa Sat=545" --landmark "60 Robinson Road:right=205"
+```
+
+`--landmark NAME[:left|right|centre]=X` gives the photo column (pixels, or 0-1 across) of
+something recognised; `NAME` is `lat,lon`, a building address or a place name. Without
+landmarks give `--near` (lat,lon or a place) and `--radius`. On a night photo of Lau Pa Sat
+with two landmarks it places the camera at the Boon Tat Street / Raffles Quay corner,
+facing north-north-west, in about 20 seconds.
+
 ## Try it on your own photos (on GitHub)
 
 Upload photos to the [`photos/`](photos/) folder (**Add file → Upload files**). The **Locate
