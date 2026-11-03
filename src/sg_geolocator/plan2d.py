@@ -276,19 +276,27 @@ def _score_spot(outlines: Outlines, cam, photo_x, landmarks, hfovs, headings, lm
 
 def resect(buildings: Buildings, photo_x, lat: float, lon: float, radius_m: float = 300.0,
            landmarks: list[Landmark] | None = None, hfovs=None, step_m: float = 4.0,
-           min_height: float = 20.0, top: int = 5, log=None) -> list[dict]:
+           min_height: float = 20.0, top: int = 5, window_min_height: float | None = None,
+           log=None) -> list[dict]:
     """Stage 1: the spots (within `radius_m` of lat, lon) whose plan-view outline edges best
     line up with `photo_x`, plus any landmark directions. Returns the best `top` distinct
     spots, each refined, with lat, lon, heading, hfov, the edge match (0-1) and the mean
-    landmark error (share of the photo width)."""
+    landmark error (share of the photo width). With `window_min_height`, only spots on the
+    outline of buildings at least that tall are tried: a view from a high window."""
     landmarks = landmarks or []
     photo_x = np.asarray(photo_x, float)
     hfovs = list(hfovs) if hfovs is not None else list(np.arange(45, 96, 5.0))
     outlines = Outlines(buildings, lat, lon, radius_m + 900, min_height)
     c = to_xy(lat, lon)
     k = int(radius_m // step_m)
-    grid = [c + (i * step_m, j * step_m) for i in range(-k, k + 1) for j in range(-k, k + 1)
-            if (i * i + j * j) * step_m * step_m <= radius_m * radius_m]
+    if window_min_height is not None:
+        sel, _ = buildings._select(lat, lon, radius_m)
+        sel = sel[buildings.heights[sel] >= window_min_height]
+        cells = np.unique(np.floor(buildings.xy[sel] / step_m).astype(int), axis=0, return_index=True)[1]
+        grid = [buildings.xy[i] for i in sel[np.sort(cells)]]  # facade points, about one per step
+    else:
+        grid = [c + (i * step_m, j * step_m) for i in range(-k, k + 1) for j in range(-k, k + 1)
+                if (i * i + j * j) * step_m * step_m <= radius_m * radius_m]
     headings = None  # every heading, scored at once
     lm_scale = 0.05  # a landmark 5% of the width off costs as much as the whole edge match
     scored = []
@@ -302,7 +310,12 @@ def resect(buildings: Buildings, photo_x, lat: float, lon: float, radius_m: floa
     for _, n, s in scored:
         if any(np.hypot(*(grid[n] - to_xy(o["lat"], o["lon"]))) < 4 * step_m for o in out):
             continue
-        cam, best = _refine(outlines, grid[n], s, photo_x, landmarks, step_m, lm_scale)
+        if window_min_height is not None:  # stay on the facade: refine heading and view only
+            cam = np.asarray(grid[n], float)
+            best = _score_spot(outlines, cam, photo_x, landmarks, np.arange(s[2] - 4, s[2] + 4.1, 1.0),
+                               None if not landmarks else np.arange(s[1] - 2, s[1] + 2.01, 0.25), lm_scale)
+        else:
+            cam, best = _refine(outlines, grid[n], s, photo_x, landmarks, step_m, lm_scale)
         la, lo = to_latlon(cam)
         out.append({"lat": round(la, 6), "lon": round(lo, 6), "heading": round(best[1], 1), "hfov": round(best[2], 1),
                     "edge_match": round(best[3], 3), "landmark_error": round(best[4], 4), "score": round(best[0], 3)})
@@ -349,6 +362,9 @@ def fit_height(buildings: Buildings, photo, lat: float, lon: float, heading: flo
     d = np.hypot(rel[:, 0], rel[:, 1])
     hs = buildings.heights[sel]
     own = set(buildings.ids[sel][d < OWN_BUILDING_M].tolist())
+    if own:  # the photo is taken from this building: the eye is at most at its roof
+        roof = float(buildings.heights[sel][d < OWN_BUILDING_M].max())
+        eyes = eyes[eyes <= roof + 2.0]
     keep = (d > OWN_BUILDING_M) & ~np.isin(buildings.ids[sel], list(own))
     rel, d, hs = rel[keep], d[keep], hs[keep]
     a = _wrap(_bearing(rel) - heading)

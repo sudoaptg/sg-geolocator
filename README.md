@@ -75,6 +75,9 @@ sg-geolocate resect photo.jpg --buildings buildings.npz --names place_names.json
     --landmark "Lau Pa Sat=545" --landmark "60 Robinson Road:right=205"
 ```
 
+For a view from a high window add `--window MIN_HEIGHT`: only spots on the outline of
+buildings at least that tall are tried, and the floor fit stops at that building's roof.
+
 `--landmark NAME[:left|right|centre]=X` gives the photo column (pixels, or 0-1 across) of
 something recognised; `NAME` is `lat,lon`, a building address or a place name. Without
 landmarks give `--near` (lat,lon or a place) and `--radius`. On a night photo of Lau Pa Sat

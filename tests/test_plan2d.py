@@ -66,3 +66,14 @@ def test_fit_height_recovers_eye_level(tmp_path):
     Image.fromarray(_photo_from(render(rel, hs, 25.0), heading=130, pitch=0, hfov=70)).save(path)
     r = P.fit_height(b, path, 1.35, 103.80, heading=130, hfov=70)
     assert r is not None and r["reliable"] and abs(r["eye_m"] - 25.0) <= 6
+
+
+def test_window_mode_only_tries_building_outlines():
+    b = _blocks()
+    k = 2  # the 80 m block: photo from its outline
+    cam = b.points[b.ids == k][3]
+    px = _photo_x(b, float(cam[0]), float(cam[1]), heading=300, hfov=70)
+    best = P.resect(b, px, 1.35, 103.80, radius_m=250, hfovs=[70], step_m=4, min_height=0, window_min_height=75)[0]
+    on = P.to_xy(best["lat"], best["lon"])
+    assert np.hypot(*(b.xy[b.ids == k] - on).T).min() < 1  # a point on the tall block's outline
+    assert abs(P._wrap(best["heading"] - 300)) < 5

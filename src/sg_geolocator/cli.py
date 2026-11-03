@@ -106,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--hfov", type=float, help="Horizontal field of view in degrees (default: EXIF, else 45-95 searched)")
     rs.add_argument("--step", type=float, default=4.0, help="Spot spacing in metres")
     rs.add_argument("--min-height", type=float, default=20.0, help="Ignore buildings lower than this (metres) in the outline")
+    rs.add_argument("--window", type=float, metavar="MIN_HEIGHT",
+                    help="View from a high window: only try spots on buildings at least this tall (metres)")
     rs.add_argument("--names", help="place_names.json.gz (to resolve place names)")
     rs.add_argument("--top", type=int, default=5)
 
@@ -302,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(edges)} vertical edges in the photo; searching {args.radius:.0f} m around {lat:.5f},{lon:.5f}",
               file=sys.stderr)
         spots = plan2d.resect(b, edges, lat, lon, args.radius, landmarks, hfovs, args.step, min_height=args.min_height,
-                              top=args.top, log=lambda m: print(m, file=sys.stderr))
+                              top=args.top, window_min_height=args.window, log=lambda m: print(m, file=sys.stderr))
         for s_ in spots:  # stage 2: height, now that the spot and heading are fixed
             s_["height"] = plan2d.fit_height(b, args.image, s_["lat"], s_["lon"], s_["heading"], s_["hfov"])
             s_["map"] = f"https://www.google.com/maps?q={s_['lat']},{s_['lon']}"
