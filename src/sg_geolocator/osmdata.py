@@ -202,7 +202,8 @@ def export_area(pbf: str | Path, bbox: tuple[float, float, float, float], log=pr
             if not keep(pts):
                 return
             item = {"pts": pts}
-            for k in ("building:levels", "height", "addr:housenumber", "addr:street", "name", "natural", "waterway", "highway"):
+            for k in ("building", "building:levels", "height", "addr:housenumber", "addr:street", "name", "natural",
+                      "waterway", "highway"):
                 if k in t:
                     item[k] = t[k]
             out[kind].append(item)
@@ -217,7 +218,9 @@ def export_area(pbf: str | Path, bbox: tuple[float, float, float, float], log=pr
             for r in a.outer_rings():
                 pts = ring(r)
                 if keep(pts):
-                    out[kind].append({"pts": pts, "name": t.get("name", ""), "natural": t.get("natural", "")})
+                    out[kind].append({"pts": pts, "name": t.get("name", ""), "natural": t.get("natural", ""),
+                                      **({"building": t["building"]} if "building" in t else {}),
+                                      **({"building:levels": t["building:levels"]} if "building:levels" in t else {})})
 
     H().apply_file(str(pbf), locations=True)
     log("  " + ", ".join(f"{k} {len(v)}" for k, v in out.items() if k != "bbox"))

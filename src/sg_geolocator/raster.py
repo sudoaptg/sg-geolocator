@@ -16,7 +16,8 @@ import numpy as np
 from .plan2d import angle_from_x, to_xy
 from .scene import BUILDING, GREEN, GROUND, SKY, WATER
 
-TREE_M = 10.0  # canopy height given to mapped greenery (parks, mangrove, wood)
+TREE_M = 10.0
+CONDO_M = 60.0  # 20 storeys: default for flat blocks (building=apartments) with no height in the map  # canopy height given to mapped greenery (parks, mangrove, wood)
 _SAMPLES = np.concatenate([np.arange(2, 60, 2.0), np.arange(60, 300, 5.0), np.arange(300, 1500, 15.0)])
 
 
@@ -30,6 +31,8 @@ def default_height(tags: dict, area_m2: float) -> float:
             return float(tags["building:levels"]) * 3.0
     except ValueError:
         pass
+    if tags.get("building") in ("apartments", "residential") and area_m2 >= 300:
+        return CONDO_M  # an unmapped flat block: most newer condos are about 20 storeys
     return 9.0 if area_m2 < 300 else 12.0 if area_m2 < 1500 else 15.0
 
 
