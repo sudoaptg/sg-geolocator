@@ -413,3 +413,42 @@ def resect_block(buildings: Buildings, photo_x, number: str, x: float, radius_m:
             if log:
                 log(f"  {buildings.labels[bid]}: edge match {r[0]['edge_match']}")
     return sorted(out, key=lambda o: -o["score"])
+
+
+def elevated_tracks_near(transit: dict, lat: float, lon: float, radius_m: float = 300.0, side_m: float = 60.0) -> int:
+    """How many elevated rail tracks run side by side near a spot (OSM maps each track or
+    direction as its own way): the most ways whose closest points lie within `side_m` of
+    each other."""
+    c = to_xy(lat, lon)
+    pts = []
+    for r in transit.get("rail", []):
+        if not r.get("elevated"):
+            continue
+        p = to_xy(*np.array(r["pts"], float).T)
+        d = np.hypot(*(p - c).T)
+        if d.min() < radius_m:
+            pts.append(p[np.argmin(d)])
+    if not pts:
+        return 0
+    pts = np.array(pts)
+    return int(max((np.hypot(*(pts - q).T) < side_m).sum() for q in pts))
+
+
+def _line_key(name: str) -> str:
+    """'MRT East-West Line (Pasir Ris -> Tuas Link)' and 'East West Line (EW)' -> 'eastwest'."""
+    import re
+
+    base = name.split("(")[0].lower().replace("mrt", "").replace("lrt", "").replace("line", "")
+    return re.sub(r"[^a-z]", "", base)
+
+
+def elevated_lines_near(transit: dict, lat: float, lon: float, radius_m: float = 300.0) -> int:
+    """How many different elevated rail lines pass within `radius_m` (unnamed ways don't count)."""
+    c = to_xy(lat, lon)
+    keys = set()
+    for r in transit.get("rail", []):
+        if r.get("elevated") and r.get("line"):
+            p = to_xy(*np.array(r["pts"], float).T)
+            if np.hypot(*(p - c).T).min() < radius_m:
+                keys.add(_line_key(r["line"]))
+    return len(keys - {""})

@@ -77,3 +77,15 @@ def test_window_mode_only_tries_building_outlines():
     on = P.to_xy(best["lat"], best["lon"])
     assert np.hypot(*(b.xy[b.ids == k] - on).T).min() < 1  # a point on the tall block's outline
     assert abs(P._wrap(best["heading"] - 300)) < 5
+
+
+def test_rail_filters_count_tracks_and_lines():
+    tr = {"rail": [
+        {"line": "MRT East-West Line (A -> B)", "elevated": True, "pts": [[1.3500, 103.7990], [1.3500, 103.8010]]},
+        {"line": "MRT East-West Line (B -> A)", "elevated": True, "pts": [[1.3501, 103.7990], [1.3501, 103.8010]]},
+        {"line": "North South Line (NS)", "elevated": True, "pts": [[1.3503, 103.7990], [1.3503, 103.8010]]},
+        {"line": "MRT North-South Line (C -> D)", "elevated": True, "pts": [[1.3504, 103.7990], [1.3504, 103.8010]]},
+        {"line": "Underground", "elevated": False, "pts": [[1.3505, 103.7990], [1.3505, 103.8010]]}]}
+    assert P.elevated_tracks_near(tr, 1.3502, 103.8000) == 4
+    assert P.elevated_lines_near(tr, 1.3502, 103.8000) == 2  # East-West + North-South
+    assert P.elevated_lines_near(tr, 1.40, 103.90) == 0

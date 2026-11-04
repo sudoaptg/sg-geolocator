@@ -102,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     bm.add_argument("--names", help="place_names.json.gz")
     bm.add_argument("--water", help="Water layer for cases using --render / --on-water")
     bm.add_argument("--plan", help="Plan-view map (sgplan release) for cases using --render")
+    bm.add_argument("--transit", help="transit.json.gz for cases using rail filters")
     bm.add_argument("--only", action="append", default=[], help="Run only these case names")
     bm.add_argument("--out", help="Write the results as JSON here")
 
@@ -130,6 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--plan", help="Plan-view map (export-area file with buildings, water, green, e.g. the sgplan "
                                     "release): all building outlines and greenery for --render")
     rs.add_argument("--on-water", action="store_true", help="Photo taken at the water's edge: only try spots on mapped water")
+    rs.add_argument("--elevated-tracks", type=int, metavar="N",
+                    help="With --block: the photo shows N elevated rail tracks side by side; keep only blocks with at "
+                         "least that many within 300 m (needs --transit)")
+    rs.add_argument("--elevated-lines", type=int, metavar="N",
+                    help="With --block: N different elevated rail lines are in view (e.g. 2 where two lines meet)")
+    rs.add_argument("--transit", help="transit.json.gz (for --elevated-tracks / --elevated-lines)")
     rs.add_argument("--window", type=float, metavar="MIN_HEIGHT",
                     help="View from a high window: only try spots on buildings at least this tall (metres)")
     rs.add_argument("--names", help="place_names.json.gz (to resolve place names)")
@@ -317,7 +324,8 @@ def main(argv: list[str] | None = None) -> int:
             if not img.exists():
                 print(f"{case['name']}: missing {img}", file=sys.stderr)
                 continue
-            cmd = [sys.executable, "-m", "sg_geolocator.cli", "resect", str(img), "--buildings", args.buildings, *case["args"]]
+            cmd = [sys.executable, "-m", "sg_geolocator.cli", "resect", str(img), "--buildings", args.buildings,
+                   *[args.transit if a == "TRANSIT" else a for a in case["args"]]]
             if args.names:
                 cmd += ["--names", args.names]
             if args.water and ("--render" in case["args"] or "--on-water" in case["args"]):
@@ -386,6 +394,25 @@ def main(argv: list[str] | None = None) -> int:
             names = PlaceNames.load(args.names)
         width = Image.open(args.image).width
         landmarks = [_parse_landmark(t, b, names, width) for t in args.landmark]
+        if args.block and (args.elevated_tracks or args.elevated_lines):  # fast filter before anything else
+            from . import transit as transit_mod
+
+            tr = transit_mod.load(args.transit)
+            num = args.block.rsplit("=", 1)[0]
+            keep = []
+            for bid in plan2d.block_candidates(b, num, min_height=0):
+                c0 = b.footprint(bid)[0].mean(0)
+                n = plan2d.elevated_tracks_near(tr, float(c0[0]), float(c0[1]))
+                nl = plan2d.elevated_lines_near(tr, float(c0[0]), float(c0[1]))
+                if n >= (args.elevated_tracks or 0) and nl >= (args.elevated_lines or 0):
+                    keep.append({"block": b.labels[bid], "lat": round(float(c0[0]), 6), "lon": round(float(c0[1]), 6),
+                                 "elevated_tracks": n, "elevated_lines": nl,
+                                 "map": f"https://www.google.com/maps?q={c0[0]:.6f},{c0[1]:.6f}"})
+            print(f"  {len(keep)} of {len(plan2d.block_candidates(b, num, min_height=0))} blocks {num} pass the rail filter",
+                  file=sys.stderr)
+            if not (args.render or args.on_water) or len(keep) <= 1:
+                print(json.dumps({"image": args.image, "block": num, "spots": keep}))
+                return 0
         if args.block and (args.render or args.on_water):
             ranked = _render_block(args, b, width)
             print(json.dumps({"image": args.image, "block": args.block.split("=")[0], "spots": ranked[: args.top]}))
