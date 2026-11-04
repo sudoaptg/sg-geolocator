@@ -563,8 +563,8 @@ def _render_setup(args, b):
         plan = raster.Plan.load(args.plan)
     else:
         plan = raster.Plan.from_buildings(b, scene.load_water(args.water) if args.water else [])
-    if args.window:
-        eyes = np.arange(args.window * 0.3, args.window * 1.6, 6.0)
+    if args.window:  # map heights are often missing or wrong for the camera's own block: allow up to 60 m
+        eyes = np.arange(max(6.0, args.window * 0.5), max(61.0, args.window * 1.6), 6.0)
     elif args.on_water:
         eyes = np.array([1.0, 2.0])
     else:
@@ -628,9 +628,11 @@ def _render_area(args, b, lat, lon):
     spots = [c + (i * st, j * st) for i in range(-k, k + 1) for j in range(-k, k + 1) if np.hypot(i, j) * st <= args.radius]
     if args.on_water:
         spots = [p for p in spots if pr.kind[tuple(((p - pr.origin) / pr.res).astype(int))] == 2]
+    if args.window:  # a view from a high window or rooftop: only points on block outlines
+        spots = list(raster.facade_spots(plan.near(lat, lon, args.radius), lat, lon, args.radius))
     print(f"  {len(spots)} spots", file=sys.stderr)
     hfovs = [args.hfov] if args.hfov else [50.0, 62.0, 75.0]
-    ag, cam, hd, hf, eye, hz = raster.search(pr, labels, spots, lambda cam, hf: list(np.arange(0, 360, 6.0)), hfovs,
+    ag, cam, hd, hf, eye, hz = raster.search(pr, labels, spots, lambda cam, hf: list(np.arange(0, 360, 10.0)), hfovs,
                                              eyes, horizons, keep=40)
     la, lo = plan2d.to_latlon(cam)
     return [{"lat": round(la, 6), "lon": round(lo, 6), "heading": round(hd, 1), "hfov": hf, "eye_m": eye,

@@ -10,8 +10,8 @@
      "truth": {"lat": 1.35778, "lon": 103.84899}, "tolerance_m": 400,
      "source": "monitor lizard in the Kallang River, Bishan-Ang Mo Kio Park, Blk 221 Bishan St 23 behind (confirmed by the user)"},
     {"name": "pasir-ris-588c", "image": "15.webp",
-     "args": ["--near", "1.37825,103.94730", "--radius", "150", "--render"],
-     "truth": {"lat": 1.37831, "lon": 103.94715, "heading": 16}, "tolerance_m": 40,
-     "source": "Blk 588C Pasir Ris Green level 15 rooftop garden over Sungei Api Api (photographer's caption)"}
+     "args": ["--near", "1.37825,103.94730", "--radius", "150", "--render", "--window", "30"],
+     "truth": {"lat": 1.37831, "lon": 103.94715, "heading": 16}, "tolerance_m": 60,
+     "source": "Blk 588C Pasir Ris Green level 15 rooftop garden over Sungei Api Api (photographer's caption). The caption names the block only (about 60 m across), so anywhere on it counts."}
   ]
 }

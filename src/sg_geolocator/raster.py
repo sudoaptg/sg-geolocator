@@ -23,10 +23,10 @@ _SAMPLES = np.concatenate([np.arange(2, 60, 2.0), np.arange(60, 300, 5.0), np.ar
 def default_height(tags: dict, area_m2: float) -> float:
     """Roof height when the map gives none: tagged levels/height, else by footprint size
     (a landed house, a shophouse row or small block, a bigger building)."""
-    try:
-        if tags.get("height"):
+    try:  # a tagged "0" means unknown, not flat
+        if tags.get("height") and float(str(tags["height"]).replace("m", "").strip()) > 0:
             return float(str(tags["height"]).replace("m", "").strip())
-        if tags.get("building:levels"):
+        if tags.get("building:levels") and float(tags["building:levels"]) > 0:
             return float(tags["building:levels"]) * 3.0
     except ValueError:
         pass
@@ -157,7 +157,7 @@ def search(raster: PlanRaster, labels: np.ndarray, spots, headings_for, hfovs, e
         hf = hfovs[len(hfovs) // 2]
         for hd in headings_for(cam, hf):
             best = max((agreement(small, raster.render(cam, e, hd, hf, hz, cw, ch)), e, hz)
-                       for e in eyes[:: max(1, len(eyes) // 3)] for hz in horizons[:: max(1, len(horizons) // 4)])
+                       for e in eyes[len(eyes) // 2: len(eyes) // 2 + 1] for hz in horizons[::2])
             rough.append((best[0], np.asarray(cam, float), float(hd)))
     rough.sort(key=lambda r: -r[0])
     h, w = labels.shape
@@ -165,7 +165,7 @@ def search(raster: PlanRaster, labels: np.ndarray, spots, headings_for, hfovs, e
     for _, cam, hd0 in rough[:keep]:
         for hf in hfovs:
             pinned = headings_for(cam, hf)
-            for hd in (pinned if len(pinned) == 1 else (hd0 - 3, hd0, hd0 + 3)):
+            for hd in (pinned if len(pinned) == 1 else (hd0 - 6, hd0 - 3, hd0, hd0 + 3, hd0 + 6)):
                 for e in eyes:
                     for hz in horizons:
                         s = agreement(labels, raster.render(cam, e, hd, hf, hz, w, h))
@@ -222,3 +222,19 @@ class Plan:
         """Any water / green within `radius_m`."""
         c = to_xy(lat, lon)
         return any(np.hypot(*(p - c).T).min() < radius_m for p in self._pts.get(kind, []))
+
+
+def facade_spots(plan_part: dict, lat: float, lon: float, radius_m: float, min_area: float = 300.0,
+                 step_m: float = 16.0) -> np.ndarray:
+    """Points along the outlines of block-sized buildings (footprint over `min_area`) within
+    `radius_m`: where a photo from a high window or a rooftop can have been taken."""
+    c = to_xy(lat, lon)
+    out = []
+    for item in plan_part.get("buildings", []):
+        xy = to_xy(*np.asarray(item["pts"], float).T)
+        if len(xy) < 4 or _area(xy) < min_area or np.hypot(*(xy - c).T).min() > radius_m:
+            continue
+        for a, b in zip(xy[:-1], xy[1:]):
+            n = max(1, int(np.hypot(*(b - a)) / step_m))
+            out += [a + (b - a) * t for t in np.arange(n) / n]
+    return np.array(out) if out else np.zeros((0, 2))
