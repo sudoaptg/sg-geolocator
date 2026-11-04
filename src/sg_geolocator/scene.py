@@ -207,20 +207,36 @@ def load_water(path) -> list:
     return [w["pts"] for w in data["water"] if len(w["pts"]) > 3 and w["pts"][0] == w["pts"][-1]]
 
 
-def search(scene: MapScene, labels: np.ndarray, spots, headings_for, hfovs, eyes, horizons, log=None):
+def search(scene: MapScene, labels: np.ndarray, spots, headings_for, hfovs, eyes, horizons, log=None,
+           keep: int = 5):
     """Best (agreement, spot, heading, hfov, eye, horizon) over candidate spots.
     `headings_for(spot, hfov)` gives the headings to try at a spot (e.g. pinned by a
-    landmark, or around the plan-view answer)."""
+    landmark, or around the plan-view answer). Coarse to fine: every spot is first scored
+    with the middle field of view, the first eye height and every other horizon row; only
+    the best `keep` spots get the full grid."""
     h, w = labels.shape
-    best = (-1.0, None, 0.0, 0.0, 0.0, 0.0)
-    for n, cam in enumerate(spots):
-        for hf in hfovs:
+    hfovs, eyes, horizons = list(hfovs), list(eyes), list(horizons)
+
+    def best_at(cam, hfs, es, hzs):
+        b = (-1.0, None, 0.0, 0.0, 0.0, 0.0)
+        for hf in hfs:
             for hd in headings_for(cam, hf):
-                for eye in eyes:
-                    for hz in horizons:
+                for eye in es:
+                    for hz in hzs:
                         s = agreement(labels, scene.render(cam, eye, hd, hf, hz, w, h))
-                        if s > best[0]:
-                            best = (s, np.asarray(cam, float), float(hd) % 360, float(hf), float(eye), float(hz))
-        if log and n and n % 50 == 0:
+                        if s > b[0]:
+                            b = (s, np.asarray(cam, float), float(hd) % 360, float(hf), float(eye), float(hz))
+        return b
+
+    coarse = []
+    for n, cam in enumerate(spots):
+        coarse.append(best_at(cam, [hfovs[len(hfovs) // 2]], eyes[:1], horizons[::2]))
+        if log and n and n % 100 == 0:
             log(f"    {n}/{len(spots)} spots")
+    coarse.sort(key=lambda r: -r[0])
+    best = (-1.0, None, 0.0, 0.0, 0.0, 0.0)
+    for r in coarse[:keep]:
+        b = best_at(r[1], hfovs, eyes, horizons)
+        if b[0] > best[0]:
+            best = b
     return best
