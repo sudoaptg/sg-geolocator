@@ -63,3 +63,19 @@ def test_transit_bus_route_and_elevated_rail(tmp_path):
     assert d["stations"][0]["name"] == "Test MRT"
     assert [(r["kind"], r["elevated"]) for r in d["roads"]] == [("primary", False), ("secondary", True)]
     assert d["roads"][1]["name"] == "Test Flyover"
+
+
+def test_export_area_keeps_box_contents(tmp_path):
+    osm = """<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6">
+  <node id="1" lat="1.300" lon="103.900" version="1"/><node id="2" lat="1.300" lon="103.901" version="1"/>
+  <node id="3" lat="1.301" lon="103.901" version="1"/><node id="4" lat="1.400" lon="103.990" version="1"/>
+  <node id="5" lat="1.401" lon="103.991" version="1"/>
+  <way id="10" version="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/><nd ref="1"/><tag k="building" v="house"/></way>
+  <way id="11" version="1"><nd ref="1"/><nd ref="3"/><tag k="waterway" v="river"/></way>
+  <way id="12" version="1"><nd ref="4"/><nd ref="5"/><tag k="waterway" v="river"/></way>
+</osm>"""
+    path = tmp_path / "t.osm"
+    path.write_text(osm)
+    d = osmdata.export_area(path, (1.29, 103.89, 1.31, 103.91), log=lambda *_: None)
+    assert len(d["buildings"]) == 1 and len(d["water"]) == 1  # the far river is outside the box

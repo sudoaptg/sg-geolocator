@@ -95,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
     bn = sub.add_parser("build-names", help="Gazetteer of named places (schools, malls, CCs...) for sign reading")
     bn.add_argument("--out", default="place_names.json.gz")
 
+    ea = sub.add_parser("export-area", help="Plan-view map data for one box: all building outlines, water, green, roads")
+    ea.add_argument("--bbox", required=True, help="south,west,north,east")
+    ea.add_argument("--out", default="area.json.gz")
+
     rs = sub.add_parser("resect", help="Where and which way a photo was taken: plan-view outline match first, height second")
     rs.add_argument("image")
     rs.add_argument("--buildings", required=True)
@@ -276,6 +280,27 @@ def main(argv: list[str] | None = None) -> int:
         names = PlaceNames.from_osm(osmdata.load(log=print))
         names.save(args.out)
         print(f"{len(names.entries)} named places -> {args.out} (copy to ~/.cache/sg_geolocator/ to use)")
+        return 0
+
+    if args.cmd == "export-area":
+        import gzip
+
+        from . import osmdata
+        import requests
+
+        pbf = osmdata.CACHE_PATH.parent / "region.osm.pbf"
+        if not pbf.exists():
+            pbf.parent.mkdir(parents=True, exist_ok=True)
+            with requests.get(osmdata.EXTRACT_URL, stream=True, timeout=600) as r:
+                r.raise_for_status()
+                with open(pbf, "wb") as f:
+                    for chunk in r.iter_content(1 << 20):
+                        f.write(chunk)
+        bbox = tuple(float(x) for x in args.bbox.split(","))
+        data = osmdata.export_area(pbf, bbox)
+        with gzip.open(args.out, "wt") as f:
+            json.dump(data, f, separators=(",", ":"))
+        print(f"area -> {args.out}")
         return 0
 
     if args.cmd == "resect":

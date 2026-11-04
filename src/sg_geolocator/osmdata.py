@@ -164,3 +164,60 @@ def load(log=print) -> dict:
         pickle.dump(data, f)
     pbf.unlink()  # large; the parsed features are what's kept
     return data
+
+
+AREA_WATER = lambda t: (t.get("natural") in ("water", "wetland", "coastline", "bay") or t.get("waterway") is not None
+                        or t.get("landuse") in ("reservoir", "basin"))
+AREA_GREEN = lambda t: t.get("natural") in ("wood", "scrub") or t.get("landuse") in ("forest", "grass") or t.get("leisure") in ("park", "nature_reserve")
+
+
+def export_area(pbf: str | Path, bbox: tuple[float, float, float, float], log=print) -> dict:
+    """Everything needed to draw a plan view of one box (south, west, north, east): every
+    building outline (with levels/height when tagged), water (rivers, canals, ponds,
+    mangrove wetland, coastline), green areas and roads. Coordinates are [lat, lon]."""
+    import osmium
+
+    s, w, n, e = bbox
+    inside = lambda la, lo: s <= la <= n and w <= lo <= e
+    out = {"bbox": list(bbox), "buildings": [], "water": [], "green": [], "roads": []}
+
+    def ring(nodes):
+        try:
+            return [[round(x.lat, 6), round(x.lon, 6)] for x in nodes]
+        except osmium.InvalidLocationError:
+            return None
+
+    def keep(pts):
+        return pts and any(inside(*p) for p in pts)
+
+    class H(osmium.SimpleHandler):
+        def way(self, wy):
+            t = wy.tags
+            kind = ("buildings" if "building" in t else "water" if AREA_WATER(t) else "green" if AREA_GREEN(t)
+                    else "roads" if "highway" in t else None)
+            if not kind:
+                return
+            pts = ring(wy.nodes)
+            if not keep(pts):
+                return
+            item = {"pts": pts}
+            for k in ("building:levels", "height", "addr:housenumber", "addr:street", "name", "natural", "waterway", "highway"):
+                if k in t:
+                    item[k] = t[k]
+            out[kind].append(item)
+
+        def area(self, a):
+            if a.from_way():
+                return
+            t = a.tags
+            kind = "buildings" if "building" in t else "water" if AREA_WATER(t) else "green" if AREA_GREEN(t) else None
+            if not kind:
+                return
+            for r in a.outer_rings():
+                pts = ring(r)
+                if keep(pts):
+                    out[kind].append({"pts": pts, "name": t.get("name", ""), "natural": t.get("natural", "")})
+
+    H().apply_file(str(pbf), locations=True)
+    log("  " + ", ".join(f"{k} {len(v)}" for k, v in out.items() if k != "bbox"))
+    return out
