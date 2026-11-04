@@ -20,6 +20,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--geocell", help="Area classifier (.npz) from train-geocell")
     p.add_argument("--places", help="Dense place-recognition index (.npz) for exact-spot matching")
     p.add_argument("--map", help="Map matcher (.npz) from train-map: compares the scene with map features")
+    p.add_argument("--refine", action="store_true",
+                   help="After the guess, run `resect --auto` around it (needs --buildings; --plan / --transit add the "
+                        "render and rail checks) and report the refined spot as well")
+    p.add_argument("--plan", help="Plan-view map (sgplan release), for --refine")
+    p.add_argument("--transit", help="transit.json.gz, for --refine")
     p.add_argument("--buildings", help="Building heights (.npz) from build-buildings: skyline matching (with --map)")
 
     f = sub.add_parser("fetch-mapillary", help="Download reference photos from Mapillary")
@@ -195,7 +200,10 @@ def main(argv: list[str] | None = None) -> int:
                          buildings_path=args.buildings)
         for img in args.images:
             pred = geo.predict(img)
-            print(json.dumps({"image": img, **(pred.as_dict() if pred else {"error": "no prediction"})}))
+            out = {"image": img, **(pred.as_dict() if pred else {"error": "no prediction"})}
+            if args.refine and pred and args.buildings:
+                out["refined"] = _refine_with_resect(img, pred, args)
+            print(json.dumps(out))
         return 0
 
     if args.cmd == "area-guess":
@@ -599,6 +607,27 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _refine_with_resect(img, pred, args) -> list:
+    """Run `resect --auto` around a predict guess (or wherever the photo's own hints point)."""
+    import contextlib
+    import io
+
+    argv = ["resect", img, "--buildings", args.buildings, "--auto", "--near", f"{pred.lat},{pred.lon}",
+            "--radius", "600", "--top", "3"]
+    if args.plan:
+        argv += ["--plan", args.plan, "--render"]
+    if args.transit:
+        argv += ["--transit", args.transit]
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            main(argv)
+    except SystemExit as exc:
+        return [{"error": str(exc)}]
+    lines = [l for l in buf.getvalue().splitlines() if l.startswith("{")]
+    return json.loads(lines[-1]).get("spots", []) if lines else []
+
+
 def _auto_hints(args, b):
     """Fill in --block / rail filter / --anywhere-water from what the photo shows."""
     import re
@@ -620,8 +649,8 @@ def _auto_hints(args, b):
             args.block = f"{t}={x:.4f}"
             found.append(f"block number {t} at {x:.0%} across")
     if scene.rail_in_view(shares) and args.block and not args.elevated_tracks and args.transit:
-        args.elevated_tracks = 2
-        found.append("elevated rail in view")
+        args.elevated_tracks = scene.tracks_in_view(shares)
+        found.append(f"elevated rail in view ({scene.rail_share(shares):.0%} of the photo: {args.elevated_tracks}+ tracks)")
     if not args.block and not args.near and not args.landmark and comp["water"] >= 0.2 and args.plan:
         args.render = args.anywhere_water = True
         found.append(f"mostly water ({comp['water']:.0%})")

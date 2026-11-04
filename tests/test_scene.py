@@ -81,3 +81,9 @@ def test_skyline_outline_and_tower_count():
     rows = R.photo_outline(labels)
     assert rows[10] == 10 and rows[20] == 30  # tower top; open sky down to the water
     assert R.count_towers(rows, 40) == 3
+
+
+def test_tracks_from_viaduct_share():
+    assert S.tracks_in_view({"railing": 0.08, "bridge": 0.06}) == 4
+    assert S.tracks_in_view({"bridge": 0.06}) == 2
+    assert S.tracks_in_view({"building": 0.9}) == 0

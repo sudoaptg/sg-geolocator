@@ -260,6 +260,18 @@ def edges_trustworthy(labels: np.ndarray) -> bool:
     return float(np.isin(labels, (GREEN, WATER)).mean()) < 0.4
 
 
+def rail_share(shares: dict[str, float]) -> float:
+    return shares.get("railing", 0.0) + shares.get("bridge", 0.0)
+
+
+def tracks_in_view(shares: dict[str, float]) -> int:
+    """Rough track count from how much of the photo is viaduct: neighbouring viaducts merge in
+    the labels, so they can't be counted one by one, but a frame that is 10%+ viaduct shows
+    several (two or more viaducts of two tracks each)."""
+    r = rail_share(shares)
+    return 0 if r < 0.05 else 4 if r >= 0.10 else 2
+
+
 def rail_in_view(shares: dict[str, float]) -> bool:
     """Elevated rail viaducts show up as 'railing' and 'bridge' in ADE20K labels."""
     return shares.get("railing", 0.0) + shares.get("bridge", 0.0) >= 0.05
