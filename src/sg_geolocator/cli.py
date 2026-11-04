@@ -613,7 +613,7 @@ def _refine_with_resect(img, pred, args) -> list:
     import io
 
     argv = ["resect", img, "--buildings", args.buildings, "--auto", "--near", f"{pred.lat},{pred.lon}",
-            "--radius", "600", "--top", "3"]
+            "--radius", "600", "--step", "25", "--top", "3"]  # ~1,800 spots: minutes, not half an hour
     if args.plan:
         argv += ["--plan", args.plan, "--render"]
     if args.transit:
