@@ -98,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     ea = sub.add_parser("export-area", help="Plan-view map data for one box: all building outlines, water, green, roads")
     ea.add_argument("--bbox", required=True, help="south,west,north,east")
     ea.add_argument("--out", default="area.json.gz")
+    ea.add_argument("--layers", default="buildings,water,green,roads", help="Which of buildings,water,green,roads")
 
     rs = sub.add_parser("resect", help="Where and which way a photo was taken: plan-view outline match first, height second")
     rs.add_argument("image")
@@ -110,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--hfov", type=float, help="Horizontal field of view in degrees (default: EXIF, else 45-95 searched)")
     rs.add_argument("--step", type=float, default=4.0, help="Spot spacing in metres")
     rs.add_argument("--min-height", type=float, default=20.0, help="Ignore buildings lower than this (metres) in the outline")
+    rs.add_argument("--block", help="NUMBER=X: a block number seen in the photo at column X; every block with that "
+                                     "number in Singapore is tried (no --near needed)")
     rs.add_argument("--window", type=float, metavar="MIN_HEIGHT",
                     help="View from a high window: only try spots on buildings at least this tall (metres)")
     rs.add_argument("--names", help="place_names.json.gz (to resolve place names)")
@@ -297,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
                     for chunk in r.iter_content(1 << 20):
                         f.write(chunk)
         bbox = tuple(float(x) for x in args.bbox.split(","))
-        data = osmdata.export_area(pbf, bbox)
+        data = osmdata.export_area(pbf, bbox, layers=tuple(args.layers.split(",")))
         with gzip.open(args.out, "wt") as f:
             json.dump(data, f, separators=(",", ":"))
         print(f"area -> {args.out}")
@@ -317,6 +320,17 @@ def main(argv: list[str] | None = None) -> int:
             names = PlaceNames.load(args.names)
         width = Image.open(args.image).width
         landmarks = [_parse_landmark(t, b, names, width) for t in args.landmark]
+        if args.block:
+            num, x = args.block.rsplit("=", 1)
+            x = float(x) / width if float(x) > 1 else float(x)
+            hfov = args.hfov or _exif_hfov(Image.open(args.image))
+            ranked = plan2d.resect_block(b, plan2d.photo_edges(args.image), num, x, args.radius,
+                                         [hfov] if hfov else list(range(45, 96, 5)), args.step, args.min_height,
+                                         args.window, log=lambda m: print(m, file=sys.stderr))
+            for s_ in ranked[: args.top]:
+                s_["map"] = f"https://www.google.com/maps?q={s_['lat']},{s_['lon']}"
+            print(json.dumps({"image": args.image, "block": num, "spots": ranked[: args.top]}))
+            return 0
         if args.near:
             lat, lon = _resolve_area(args.near, None, names)
         elif landmarks:

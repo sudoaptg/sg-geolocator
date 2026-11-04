@@ -171,7 +171,8 @@ AREA_WATER = lambda t: (t.get("natural") in ("water", "wetland", "coastline", "b
 AREA_GREEN = lambda t: t.get("natural") in ("wood", "scrub") or t.get("landuse") in ("forest", "grass") or t.get("leisure") in ("park", "nature_reserve")
 
 
-def export_area(pbf: str | Path, bbox: tuple[float, float, float, float], log=print) -> dict:
+def export_area(pbf: str | Path, bbox: tuple[float, float, float, float], log=print,
+                layers: tuple[str, ...] = ("buildings", "water", "green", "roads")) -> dict:
     """Everything needed to draw a plan view of one box (south, west, north, east): every
     building outline (with levels/height when tagged), water (rivers, canals, ponds,
     mangrove wetland, coastline), green areas and roads. Coordinates are [lat, lon]."""
@@ -195,7 +196,7 @@ def export_area(pbf: str | Path, bbox: tuple[float, float, float, float], log=pr
             t = wy.tags
             kind = ("buildings" if "building" in t else "water" if AREA_WATER(t) else "green" if AREA_GREEN(t)
                     else "roads" if "highway" in t else None)
-            if not kind:
+            if not kind or kind not in layers:
                 return
             pts = ring(wy.nodes)
             if not keep(pts):
@@ -211,7 +212,7 @@ def export_area(pbf: str | Path, bbox: tuple[float, float, float, float], log=pr
                 return
             t = a.tags
             kind = "buildings" if "building" in t else "water" if AREA_WATER(t) else "green" if AREA_GREEN(t) else None
-            if not kind:
+            if not kind or kind not in layers:
                 return
             for r in a.outer_rings():
                 pts = ring(r)

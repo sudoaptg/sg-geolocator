@@ -386,3 +386,30 @@ def fit_height(buildings: Buildings, photo, lat: float, lon: float, heading: flo
     near = [r for r in rows if r[0] <= err + 0.25]
     return {"reliable": err < 1.5, "eye_m": eye, "floor": max(1, int(round((eye - EYE_ABOVE_FLOOR_M) / FLOOR_M)) + 1), "tilt_deg": round(tilt, 2),
             "error_deg": round(err, 3), "eye_range_m": [min(r[1] for r in near), max(r[1] for r in near)]}
+
+
+def block_candidates(buildings: Buildings, number: str, min_height: float = 20.0) -> list[int]:
+    """Building ids whose address number is `number` ("221", "588C"), anywhere in Singapore."""
+    key = "blk " + number.strip().lower() + " "
+    return [i for i, label in enumerate(buildings.labels)
+            if label.lower().startswith(key) and buildings.heights[buildings.ids == i].max() >= min_height]
+
+
+def resect_block(buildings: Buildings, photo_x, number: str, x: float, radius_m: float = 300.0, hfovs=None,
+                 step_m: float = 6.0, min_height: float = 20.0, window_min_height: float | None = None,
+                 log=None) -> list[dict]:
+    """A block number seen in the photo at column `x` (0-1): try every block with that number,
+    solve the camera around each with the block as a landmark, and rank them by how well
+    the rest of the outline edges line up."""
+    out = []
+    for bid in block_candidates(buildings, number):
+        pts, _ = buildings.footprint(bid)
+        lat, lon = pts.mean(0)
+        lm = Landmark(x, float(lat), float(lon), "centre", building=bid)
+        r = resect(buildings, photo_x, float(lat), float(lon), radius_m, [lm], hfovs, step_m, min_height, top=1,
+                   window_min_height=window_min_height)
+        if r:
+            out.append({"block": buildings.labels[bid], **r[0]})
+            if log:
+                log(f"  {buildings.labels[bid]}: edge match {r[0]['edge_match']}")
+    return sorted(out, key=lambda o: -o["score"])
