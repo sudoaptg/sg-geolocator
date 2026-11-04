@@ -138,6 +138,12 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--auto", action="store_true",
                     help="Work out the hints from the photo: a block number read off a building becomes --block, elevated "
                          "rail in view becomes a rail filter, mostly water in view becomes --anywhere-water (with --plan)")
+    rs.add_argument("--drone", action="store_true",
+                    help="With --plan: a drone / high oblique view of an estate. Places where --slabs long slab blocks "
+                         "stand one behind another (and, unless --no-forest, a big green area lies beyond) are found from "
+                         "footprints, then ranked by render-and-compare from 60-150 m up")
+    rs.add_argument("--slabs", type=int, default=4, help="For --drone: how many stacked parallel slabs are in view")
+    rs.add_argument("--no-forest", action="store_true", help="For --drone: no forest / big park beyond the blocks")
     rs.add_argument("--anywhere-water", action="store_true",
                     help="With --render --plan, no area needed: photo taken at a lake/pond/river with blocks around; "
                          "every such water in Singapore is searched")
@@ -444,6 +450,16 @@ def main(argv: list[str] | None = None) -> int:
             for s_ in ranked[: args.top]:
                 s_["map"] = f"https://www.google.com/maps?q={s_['lat']},{s_['lon']}"
             print(json.dumps({"image": args.image, "block": num, "spots": ranked[: args.top]}))
+            return 0
+        if args.drone:
+            from . import layout, raster, scene
+
+            if not args.plan:
+                raise SystemExit("--drone needs --plan")
+            labels = scene.Segmenter().labels(args.image, width=64)
+            spots = layout.drone_search(raster.Plan.load(args.plan), labels, b, args.slabs, not args.no_forest,
+                                        top=args.top, log=lambda m: print(m, file=sys.stderr))
+            print(json.dumps({"image": args.image, "spots": spots}))
             return 0
         if args.render and args.anywhere_water:
             from . import raster, scene

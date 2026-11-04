@@ -101,6 +101,11 @@ sg-geolocate resect lizard.jpg --buildings buildings.npz --water sgwater.json.gz
 On that photo (Kallang River, Bishan) edges alone ranked the right Blk 221 third of eleven;
 render-and-compare ranks it first.
 
+For drone or other high views of an estate, `--drone` (with `--plan`) first finds every
+place where `--slabs` long slab blocks stand one behind another (and a big green area lies
+beyond, unless `--no-forest`) from footprints alone, which takes seconds for the whole
+island, then ranks those places by render-and-compare from 60-150 m up.
+
 `sg-geolocate benchmark benchmarks/cases.json --images DIR --buildings ...` runs every
 confirmed case and reports the error in metres and degrees, so changes are judged on
 numbers rather than one example.
