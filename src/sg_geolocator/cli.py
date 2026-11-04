@@ -101,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     bm.add_argument("--buildings", required=True)
     bm.add_argument("--names", help="place_names.json.gz")
     bm.add_argument("--water", help="Water layer for cases using --render / --on-water")
+    bm.add_argument("--plan", help="Plan-view map (sgplan release) for cases using --render")
     bm.add_argument("--only", action="append", default=[], help="Run only these case names")
     bm.add_argument("--out", help="Write the results as JSON here")
 
@@ -126,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="Re-rank by render-and-compare: label the photo's pixels (sky, building, water, ...) and compare "
                          "with the map drawn from each candidate (needs the segmenter release in $SG_GEOLOCATOR_MODELS)")
     rs.add_argument("--water", help="Water layer (export-area file, e.g. the sgwater release) for --render / --on-water")
+    rs.add_argument("--plan", help="Plan-view map (export-area file with buildings, water, green, e.g. the sgplan "
+                                    "release): all building outlines and greenery for --render")
     rs.add_argument("--on-water", action="store_true", help="Photo taken at the water's edge: only try spots on mapped water")
     rs.add_argument("--window", type=float, metavar="MIN_HEIGHT",
                     help="View from a high window: only try spots on buildings at least this tall (metres)")
@@ -319,6 +322,8 @@ def main(argv: list[str] | None = None) -> int:
                 cmd += ["--names", args.names]
             if args.water and ("--render" in case["args"] or "--on-water" in case["args"]):
                 cmd += ["--water", args.water]
+            if args.plan and "--render" in case["args"]:
+                cmd += ["--plan", args.plan]
             import time
 
             t = time.time()
@@ -395,6 +400,11 @@ def main(argv: list[str] | None = None) -> int:
             for s_ in ranked[: args.top]:
                 s_["map"] = f"https://www.google.com/maps?q={s_['lat']},{s_['lon']}"
             print(json.dumps({"image": args.image, "block": num, "spots": ranked[: args.top]}))
+            return 0
+        if args.render and not landmarks and args.near:
+            lat, lon = _resolve_area(args.near, None, names)
+            spots = _render_area(args, b, lat, lon)
+            print(json.dumps({"image": args.image, "spots": spots}))
             return 0
         if args.near:
             lat, lon = _resolve_area(args.near, None, names)
@@ -542,34 +552,56 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _render_setup(args):
+def _render_setup(args, b):
+    """Photo labels, the plan map, and the search ranges for render-and-compare."""
     import numpy as np
 
-    from . import scene
+    from . import raster, scene
 
-    water = scene.load_water(args.water) if args.water else []
     labels = scene.Segmenter().labels(args.image, width=64)
-    eyes = np.array([1.2, 3.0]) if not args.window else np.arange(args.window * 0.3, args.window * 1.6, 6.0)
-    return scene, water, labels, eyes, np.arange(0.30, 0.71, 0.03)
+    if args.plan:
+        plan = raster.Plan.load(args.plan)
+    else:
+        plan = raster.Plan.from_buildings(b, scene.load_water(args.water) if args.water else [])
+    if args.window:
+        eyes = np.arange(args.window * 0.3, args.window * 1.6, 6.0)
+    elif args.on_water:
+        eyes = np.array([1.0, 2.0])
+    else:
+        eyes = np.array([1.5, 4.0, 10.0, 20.0, 30.0, 45.0, 60.0])  # street level up to a high floor
+    horizons = np.arange(0.25, 0.71, 0.03)
+    comp = raster.composition(labels)
+    print(f"  photo: {', '.join(f'{k} {v:.0%}' for k, v in comp.items())}", file=sys.stderr)
+    return raster, plan, labels, eyes, horizons, comp
+
+
+def _fits_scene(plan, comp, lat, lon, radius):
+    """Cheap filter from what the photo shows: lots of water needs mapped water nearby, lots of
+    greenery needs mapped greenery (parks, mangrove, wood) nearby."""
+    if comp["water"] >= 0.08 and not plan.has("water", lat, lon, radius):
+        return "no water nearby"
+    if comp["green"] >= 0.25 and plan._pts.get("green") and not plan.has("green", lat, lon, radius):
+        return "no greenery nearby"
+    return None
 
 
 def _render_rerank(args, b, spots):
-    """Stage 2 for plan-view answers: search spot (+-1 step), heading (+-6 deg), eye height and
-    horizon row around each, by how well the drawn map agrees with the labelled photo."""
+    """Stage 2 for plan-view answers: search spot (+-2 steps), heading, eye height and horizon
+    around each by how well the drawn map agrees with the labelled photo."""
     import numpy as np
 
     from . import plan2d
 
-    scene, water, labels, eyes, horizons = _render_setup(args)
+    raster, plan, labels, eyes, horizons, comp = _render_setup(args, b)
     out = []
     for s_ in spots:
-        sc = scene.MapScene(b, s_["lat"], s_["lon"], 1300, water)
+        pr = raster.PlanRaster(plan.near(s_["lat"], s_["lon"], 1500), s_["lat"], s_["lon"], 1500, b)
         c = plan2d.to_xy(s_["lat"], s_["lon"])
-        near = [c + (dx, dy) for dx in (-args.step, 0, args.step) for dy in (-args.step, 0, args.step)]
+        st = args.step
+        near = [c + (dx * st, dy * st) for dx in range(-2, 3) for dy in range(-2, 3)]
         hd0 = s_["heading"]
-        best = scene.search(sc, labels, near, lambda cam, hf: [hd0 - 6, hd0 - 3, hd0, hd0 + 3, hd0 + 6], [s_["hfov"]],
-                            eyes, horizons)
-        ag, cam, hd, hf, eye, hz = best
+        ag, cam, hd, hf, eye, hz = raster.search(pr, labels, near, lambda cam, hf: list(np.arange(hd0 - 9, hd0 + 9.1, 3)),
+                                                 [s_["hfov"]], eyes, horizons, keep=8)
         la, lo = plan2d.to_latlon(cam)
         out.append({**s_, "lat": round(la, 6), "lon": round(lo, 6), "heading": round(hd, 1), "agreement": round(ag, 4),
                     "eye_m": eye, "horizon": round(hz, 3)})
@@ -577,17 +609,46 @@ def _render_rerank(args, b, spots):
     return sorted(out, key=lambda o: -o["agreement"])
 
 
+def _render_area(args, b, lat, lon):
+    """No landmarks: search the area by render-and-compare alone (spots every `step`, every
+    6 degrees of heading), after the cheap scene filter."""
+    import numpy as np
+
+    from . import plan2d
+
+    raster, plan, labels, eyes, horizons, comp = _render_setup(args, b)
+    why = _fits_scene(plan, comp, lat, lon, args.radius + 300)
+    if why:
+        print(f"  area rejected: {why}", file=sys.stderr)
+        return []
+    pr = raster.PlanRaster(plan.near(lat, lon, args.radius + 1200), lat, lon, args.radius + 1200, b)
+    c = plan2d.to_xy(lat, lon)
+    st = max(args.step, 8.0)
+    k = int(args.radius // st)
+    spots = [c + (i * st, j * st) for i in range(-k, k + 1) for j in range(-k, k + 1) if np.hypot(i, j) * st <= args.radius]
+    if args.on_water:
+        spots = [p for p in spots if pr.kind[tuple(((p - pr.origin) / pr.res).astype(int))] == 2]
+    print(f"  {len(spots)} spots", file=sys.stderr)
+    hfovs = [args.hfov] if args.hfov else [50.0, 62.0, 75.0]
+    ag, cam, hd, hf, eye, hz = raster.search(pr, labels, spots, lambda cam, hf: list(np.arange(0, 360, 6.0)), hfovs,
+                                             eyes, horizons, keep=40)
+    la, lo = plan2d.to_latlon(cam)
+    return [{"lat": round(la, 6), "lon": round(lo, 6), "heading": round(hd, 1), "hfov": hf, "eye_m": eye,
+             "horizon": round(hz, 3), "agreement": round(ag, 4), "map": f"https://www.google.com/maps?q={la:.6f},{lo:.6f}"}]
+
+
 def _render_block(args, b, width):
-    """A block number at a known column: for every block with that number, search spots
-    (on mapped water with --on-water, else a grid around it) with the heading pinned by the
-    block's direction; rank by render-and-compare."""
+    """A block number at a known column: every block with that number is first checked
+    cheaply against what the photo shows (water, greenery nearby); the survivors are searched
+    (on mapped water with --on-water, else a grid) with the heading pinned by the block's
+    direction, and ranked by render-and-compare."""
     import numpy as np
     from PIL import Image
 
     from . import plan2d
     from .skyline import _exif_hfov
 
-    scene, water, labels, eyes, horizons = _render_setup(args)
+    raster, plan, labels, eyes, horizons, comp = _render_setup(args, b)
     num, x = args.block.rsplit("=", 1)
     x = float(x) / width if float(x) > 1 else float(x)
     hfov = args.hfov or _exif_hfov(Image.open(args.image))
@@ -595,21 +656,25 @@ def _render_block(args, b, width):
     out = []
     for bid in plan2d.block_candidates(b, num):
         c0 = b.footprint(bid)[0].mean(0)
-        cxy = plan2d.to_xy(*c0)
-        sc = scene.MapScene(b, float(c0[0]), float(c0[1]), args.radius + 1000, water)
+        la0, lo0 = float(c0[0]), float(c0[1])
+        why = _fits_scene(plan, comp, la0, lo0, args.radius)
+        if why:
+            print(f"  {b.labels[bid]}: skipped ({why})", file=sys.stderr)
+            continue
+        cxy = plan2d.to_xy(la0, lo0)
+        pr = raster.PlanRaster(plan.near(la0, lo0, args.radius + 1000), la0, lo0, args.radius + 1000, b)
+        st = max(args.step, 8.0)
+        k = int(args.radius // st)
+        spots = [cxy + (i * st, j * st) for i in range(-k, k + 1) for j in range(-k, k + 1)
+                 if 30 <= np.hypot(i, j) * st <= args.radius]
         if args.on_water:
-            spots = scene.water_spots(sc, cxy, args.radius, max(args.step, 10.0))
-        else:
-            k = int(args.radius // max(args.step, 10.0))
-            st = max(args.step, 10.0)
-            spots = [cxy + (i * st, j * st) for i in range(-k, k + 1) for j in range(-k, k + 1)
-                     if 30 <= np.hypot(i, j) * st <= args.radius]
-        if not len(spots):
+            spots = [p for p in spots if pr.kind[tuple(((p - pr.origin) / pr.res).astype(int))] == 2]
+        if not spots:
             print(f"  {b.labels[bid]}: no candidate spots", file=sys.stderr)
             continue
-        best = scene.search(sc, labels, spots, lambda cam, hf: [plan2d._bearing(cxy - cam) - plan2d.angle_from_x(x, hf)],
-                            hfovs, eyes, horizons)
-        ag, cam, hd, hf, eye, hz = best
+        ag, cam, hd, hf, eye, hz = raster.search(
+            pr, labels, spots, lambda cam, hf: [plan2d._bearing(cxy - cam) - plan2d.angle_from_x(x, hf)], hfovs, eyes,
+            horizons, keep=10)
         la, lo = plan2d.to_latlon(cam)
         print(f"  {b.labels[bid]}: agreement {ag:.3f} ({len(spots)} spots)", file=sys.stderr)
         out.append({"block": b.labels[bid], "lat": round(la, 6), "lon": round(lo, 6), "heading": round(hd, 1),
