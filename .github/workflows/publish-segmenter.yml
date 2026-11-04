@@ -1,0 +1,35 @@
+name: Publish scene segmenter
+
+# Publishes SegFormer-B0 (ADE20K: sky, building, water, tree, road, ...) as a release asset,
+# so `resect` can label each pixel of a photo offline. Weights: nvidia/segformer-b0-finetuned-ade-512-512
+# (NVIDIA Source Code License, non-commercial use).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install huggingface_hub
+      - name: Download
+        run: |
+          python - <<'PY'
+          from huggingface_hub import snapshot_download
+          snapshot_download("nvidia/segformer-b0-finetuned-ade-512-512", local_dir="segformer",
+                            allow_patterns=["*.json", "*.safetensors", "pytorch_model.bin"])
+          PY
+          tar -czf segformer.tar.gz segformer && ls -lh segformer.tar.gz
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="segmenter-$(date -u +%Y%m%d-%H%M)"
+          gh release create "$tag" segformer.tar.gz --repo "${{ github.repository }}" --title "$tag" \
+            --notes "SegFormer-B0 ADE20K (nvidia/segformer-b0-finetuned-ade-512-512, NVIDIA Source Code License, non-commercial). Extract into \$SG_GEOLOCATOR_MODELS."
