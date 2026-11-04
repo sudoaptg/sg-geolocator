@@ -452,3 +452,25 @@ def elevated_lines_near(transit: dict, lat: float, lon: float, radius_m: float =
             if np.hypot(*(p - c).T).min() < radius_m:
                 keys.add(_line_key(r["line"]))
     return len(keys - {""})
+
+
+def outlines_from_plan(plan_part: dict, heights: list[float] | None = None, min_height: float = 20.0) -> Outlines:
+    """Outlines from plan-map footprints (every building, not only those with a known height).
+    `heights` (one per building, e.g. raster.building_heights) decides which are tall enough
+    to show up as separate edges against the sky."""
+    o = Outlines.__new__(Outlines)
+    xy, ids = [], []
+    for k, item in enumerate(plan_part.get("buildings", [])):
+        if heights is not None and heights[k] < min_height:
+            continue
+        p = to_xy(*np.asarray(item["pts"], float).T)
+        xy.append(p)
+        ids.append(np.full(len(p), k))
+    if not xy:
+        o.xy, o.ids = np.zeros((0, 2)), np.zeros(0, int)
+    else:
+        o.xy, o.ids = np.concatenate(xy), np.concatenate(ids)
+    starts = np.flatnonzero(np.r_[True, o.ids[1:] != o.ids[:-1]]) if len(o.ids) else np.zeros(0, int)
+    o.starts, o.ends = starts, np.r_[starts[1:], len(o.ids)] if len(starts) else np.zeros(0, int)
+    o.bid = o.ids[starts] if len(starts) else np.zeros(0, int)
+    return o

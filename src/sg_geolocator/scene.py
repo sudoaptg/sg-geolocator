@@ -53,6 +53,18 @@ class Segmenter:
                 if any(n.strip() in group for n in name.split(";")) or name.split(",")[0].strip() in group:
                     self.lut[int(i)] = kind
 
+    def class_shares(self, path) -> dict[str, float]:
+        """Share of the photo per raw ADE20K class name (e.g. 'railing', 'bridge')."""
+        from PIL import Image
+
+        img = Image.open(path).convert("RGB")
+        inputs = self.processor(images=img, return_tensors="pt")
+        with self._torch.no_grad():
+            pred = self.model(**inputs).logits.argmax(1)[0].numpy()
+        ids, counts = np.unique(pred, return_counts=True)
+        names = self.model.config.id2label
+        return {names[int(i)].split(",")[0].strip(): float(c / counts.sum()) for i, c in zip(ids, counts)}
+
     def labels(self, path, width: int = 256) -> np.ndarray:
         """Kind of every pixel, at `width` columns."""
         from PIL import Image
@@ -240,3 +252,14 @@ def search(scene: MapScene, labels: np.ndarray, spots, headings_for, hfovs, eyes
         if b[0] > best[0]:
             best = b
     return best
+
+
+def edges_trustworthy(labels: np.ndarray) -> bool:
+    """Building-edge matching works when buildings stand against the sky; when trees and
+    water fill most of the photo, their edges and reflections drown the building ones."""
+    return float(np.isin(labels, (GREEN, WATER)).mean()) < 0.4
+
+
+def rail_in_view(shares: dict[str, float]) -> bool:
+    """Elevated rail viaducts show up as 'railing' and 'bridge' in ADE20K labels."""
+    return shares.get("railing", 0.0) + shares.get("bridge", 0.0) >= 0.05

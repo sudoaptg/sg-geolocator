@@ -62,12 +62,7 @@
    "name": "jurong-east-204",
    "image": "jurong-east-204.webp",
    "args": [
-    "--block",
-    "204=95",
-    "--elevated-tracks",
-    "4",
-    "--elevated-lines",
-    "2",
+    "--auto",
     "--transit",
     "TRANSIT"
    ],
@@ -76,27 +71,21 @@
     "lon": 103.74189
    },
    "tolerance_m": 200,
-   "source": "elevated East-West + North-South line curve with Jurong Region Line viaduct being built, Blk 204 Jurong East St 21 in view (confirmed by the user)"
+   "source": "elevated East-West + North-South line curve with Jurong Region Line viaduct being built, Blk 204 Jurong East St 21 in view (confirmed by the user) Run with --auto: no hints, the block number and rail are read from the photo."
   },
   {
    "name": "sengkang-riverside",
    "image": "sengkang-riverside.webp",
    "args": [
-    "--near",
-    "1.4086,103.905",
-    "--radius",
-    "800",
     "--render",
-    "--on-water",
-    "--step",
-    "20"
+    "--anywhere-water"
    ],
    "truth": {
     "lat": 1.393066,
     "lon": 103.882068
    },
    "tolerance_m": 200,
-   "source": "pond at Sengkang Riverside Park with condos behind (location given by the user). Uses the no-hint guess (Punggol Waterway, 3 km off) as the area, so it fails until the area step considers more than one place."
+   "source": "pond at Sengkang Riverside Park with condos behind (location given by the user). Run with --anywhere-water: every lake/pond with blocks around is searched."
   }
  ]
 }

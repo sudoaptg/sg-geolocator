@@ -130,6 +130,12 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--water", help="Water layer (export-area file, e.g. the sgwater release) for --render / --on-water")
     rs.add_argument("--plan", help="Plan-view map (export-area file with buildings, water, green, e.g. the sgplan "
                                     "release): all building outlines and greenery for --render")
+    rs.add_argument("--auto", action="store_true",
+                    help="Work out the hints from the photo: a block number read off a building becomes --block, elevated "
+                         "rail in view becomes a rail filter, mostly water in view becomes --anywhere-water (with --plan)")
+    rs.add_argument("--anywhere-water", action="store_true",
+                    help="With --render --plan, no area needed: photo taken at a lake/pond/river with blocks around; "
+                         "every such water in Singapore is searched")
     rs.add_argument("--on-water", action="store_true", help="Photo taken at the water's edge: only try spots on mapped water")
     rs.add_argument("--elevated-tracks", type=int, metavar="N",
                     help="With --block: the photo shows N elevated rail tracks side by side; keep only blocks with at "
@@ -393,6 +399,8 @@ def main(argv: list[str] | None = None) -> int:
 
             names = PlaceNames.load(args.names)
         width = Image.open(args.image).width
+        if args.auto:
+            _auto_hints(args, b)
         landmarks = [_parse_landmark(t, b, names, width) for t in args.landmark]
         if args.block and (args.elevated_tracks or args.elevated_lines):  # fast filter before anything else
             from . import transit as transit_mod
@@ -410,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
                                  "map": f"https://www.google.com/maps?q={c0[0]:.6f},{c0[1]:.6f}"})
             print(f"  {len(keep)} of {len(plan2d.block_candidates(b, num, min_height=0))} blocks {num} pass the rail filter",
                   file=sys.stderr)
+            keep.sort(key=lambda k: (-k["elevated_lines"], -k["elevated_tracks"]))  # most rail around first
             if not (args.render or args.on_water) or len(keep) <= 1:
                 print(json.dumps({"image": args.image, "block": num, "spots": keep}))
                 return 0
@@ -427,6 +436,17 @@ def main(argv: list[str] | None = None) -> int:
             for s_ in ranked[: args.top]:
                 s_["map"] = f"https://www.google.com/maps?q={s_['lat']},{s_['lon']}"
             print(json.dumps({"image": args.image, "block": num, "spots": ranked[: args.top]}))
+            return 0
+        if args.render and args.anywhere_water:
+            from . import raster, scene
+
+            if not args.plan:
+                raise SystemExit("--anywhere-water needs --plan")
+            labels = scene.Segmenter().labels(args.image, width=64)
+            print(f"  photo: {raster.composition(labels)}", file=sys.stderr)
+            spots = raster.search_waters(raster.Plan.load(args.plan), labels, b, top=args.top,
+                                         log=lambda m: print(m, file=sys.stderr))
+            print(json.dumps({"image": args.image, "spots": spots}))
             return 0
         if args.render and not landmarks and args.near:
             lat, lon = _resolve_area(args.near, None, names)
@@ -577,6 +597,37 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.md_out, "w") as fh:
             fh.write(md)
     return 0
+
+
+def _auto_hints(args, b):
+    """Fill in --block / rail filter / --anywhere-water from what the photo shows."""
+    import re
+
+    from . import plan2d, raster, scene
+    from .clues import TextReader
+
+    seg = scene.Segmenter()
+    labels = seg.labels(args.image, width=64)
+    shares = seg.class_shares(args.image)
+    comp = raster.composition(labels)
+    found = []
+    if not args.block:
+        texts = TextReader().read_positions(args.image)
+        nums = [(t.strip().upper(), xy) for t, xy in texts.items() if re.fullmatch(r"\d{1,4}[A-Z]?", t.strip().upper())]
+        nums = [(t, xy) for t, xy in nums if plan2d.block_candidates(b, t, min_height=0)]
+        if nums:
+            t, (x, _) = max(nums, key=lambda n: len(n[0]))
+            args.block = f"{t}={x:.4f}"
+            found.append(f"block number {t} at {x:.0%} across")
+    if scene.rail_in_view(shares) and args.block and not args.elevated_tracks and args.transit:
+        args.elevated_tracks = 2
+        found.append("elevated rail in view")
+    if not args.block and not args.near and not args.landmark and comp["water"] >= 0.2 and args.plan:
+        args.render = args.anywhere_water = True
+        found.append(f"mostly water ({comp['water']:.0%})")
+    if args.render is False and args.plan and not scene.edges_trustworthy(labels):
+        args.render = True
+    print(f"  auto: {', '.join(found) or 'no hints found'}", file=sys.stderr)
 
 
 def _render_setup(args, b):

@@ -282,3 +282,111 @@ def facade_spots(plan_part: dict, lat: float, lon: float, radius_m: float, min_a
             n = max(1, int(np.hypot(*(b - a)) / step_m))
             out += [a + (b - a) * t for t in np.arange(n) / n]
     return np.array(out) if out else np.zeros((0, 2))
+
+
+def building_heights(plan_part: dict, buildings=None) -> list[float]:
+    """Roof height of each building in a plan-map part: HDB's storey data by address when
+    there is a match, else the map's own height/levels, else the default by type and size."""
+    known = _known_heights(buildings) if buildings is not None else {}
+    out = []
+    for item in plan_part.get("buildings", []):
+        label = f"blk {item.get('addr:housenumber', '')} {item.get('addr:street', '')}".lower().strip()
+        xy = to_xy(*np.asarray(item["pts"], float).T)
+        out.append(known.get(label) or default_height(item, _area(xy)))
+    return out
+
+
+# --------------------------------------------------------------------------- island-wide water search
+
+
+def candidate_waters(plan: "Plan", buildings=None, min_area: float = 10000.0, min_tall: int = 6,
+                     tall_m: float = 45.0, within_m: float = 400.0) -> list[np.ndarray]:
+    """Lakes, ponds and river stretches (outlines in metres) at least `min_area` big with at
+    least `min_tall` tall blocks within `within_m` of the water's edge."""
+    heights = np.array(building_heights(plan.data, buildings))
+    tall = plan.centres["buildings"][heights >= tall_m]
+    out = []
+    for pts in plan._pts["water"]:
+        if len(pts) < 4 or _area(pts) < min_area:
+            continue
+        edge = pts[:: max(1, len(pts) // 40)]
+        d = np.min(np.hypot(*(tall[:, None, :] - edge[None, :, :]).transpose(2, 0, 1)), axis=1)
+        if (d < within_m).sum() >= min_tall:
+            out.append(pts)
+    return out
+
+
+def shore_spots(pts: np.ndarray, step_m: float = 25.0, cap: int = 40) -> np.ndarray:
+    """Points along a water outline, about `step_m` apart (at most `cap`, spread evenly)."""
+    out = []
+    for a, b in zip(pts[:-1], pts[1:]):
+        n = max(1, int(np.hypot(*(b - a)) / step_m))
+        out += [a + (b - a) * t for t in np.arange(n) / n]
+    out = np.array(out) if out else pts[:1]
+    return out[np.linspace(0, len(out) - 1, min(cap, len(out))).astype(int)]
+
+
+_LAKE = {}
+
+
+def _quick_lake(pts):
+    J = _LAKE
+    lat, lon = _to_latlon_xy(pts.mean(0))
+    r = float(np.hypot(*(pts - pts.mean(0)).T).max())
+    pr = PlanRaster(J["plan"].near(lat, lon, r + 900), lat, lon, r + 900, J["buildings"])
+    cw, ch = J["small"].shape[1], J["small"].shape[0]
+    best = (-1.0, None, 0.0, 0.0)
+    for cam in shore_spots(pts):
+        for hd in range(0, 360, 10):
+            ahead = cam + 30 * np.array([np.sin(np.radians(hd)), np.cos(np.radians(hd))])
+            i, j = ((ahead - pr.origin) / pr.res).astype(int)
+            if not (0 <= i < pr.n and 0 <= j < pr.n) or pr.kind[i, j] != WATER:
+                continue  # look across the water, not away from it
+            for hf in J["hfovs_c"]:
+                for hz in (0.4, 0.5, 0.6):
+                    s = agreement(J["small"], pr.render(cam, 1.5, hd, hf, hz, cw, ch))
+                    if s > best[0]:
+                        best = (s, cam, float(hd), float(hf))
+    return best
+
+
+def _to_latlon_xy(xy):
+    from .plan2d import to_latlon
+
+    return to_latlon(xy)
+
+
+def search_waters(plan: "Plan", labels: np.ndarray, buildings=None, top: int = 5, workers: int | None = None,
+                  log=None) -> list[dict]:
+    """No area given, photo taken at the water: every candidate lake/pond/river stretch gets a
+    quick render search from its shore looking across the water (10 degree steps, normal to
+    ultra-wide lens); the best `top` get the full search."""
+    import multiprocessing as mp
+    import os
+
+    from PIL import Image
+
+    lakes = candidate_waters(plan, buildings)
+    if log:
+        log(f"  {len(lakes)} candidate lakes/ponds/river stretches")
+    _LAKE.update(plan=plan, buildings=buildings, hfovs_c=(70.0, 100.0),
+                 small=np.asarray(Image.fromarray(labels).resize((24, 18), Image.NEAREST)))
+    with mp.get_context("fork").Pool(workers or os.cpu_count() or 1) as pool:
+        quick = pool.map(_quick_lake, lakes, chunksize=2)
+    order = [k for k in np.argsort([-q[0] for q in quick]) if quick[k][1] is not None][:top]
+    out = []
+    for k in order:
+        _, cam0, hd0, hf0 = quick[k]
+        lat, lon = _to_latlon_xy(cam0)
+        pr = PlanRaster(plan.near(lat, lon, 1300), lat, lon, 1300, buildings)
+        spots = [cam0 + (dx, dy) for dx in range(-40, 41, 10) for dy in range(-40, 41, 10)]
+        ag, cam, hd, hf, eye, hz = search(pr, labels, spots, lambda c, h: list(np.arange(hd0 - 15, hd0 + 15.1, 5.0)),
+                                          [hf0 - 10, hf0, hf0 + 10], [1.0, 2.0, 4.0], np.arange(0.35, 0.66, 0.03),
+                                          keep=15, workers=workers)
+        la, lo = _to_latlon_xy(cam)
+        out.append({"lat": round(la, 6), "lon": round(lo, 6), "heading": round(hd, 1), "hfov": hf, "eye_m": eye,
+                    "horizon": round(hz, 3), "agreement": round(ag, 4), "quick": round(quick[k][0], 4),
+                    "map": f"https://www.google.com/maps?q={la:.6f},{lo:.6f}"})
+        if log:
+            log(f"  {la:.5f},{lo:.5f}: quick {quick[k][0]:.3f} -> full {ag:.3f}")
+    return sorted(out, key=lambda o: -o["agreement"])
