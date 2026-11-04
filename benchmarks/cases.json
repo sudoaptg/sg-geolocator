@@ -1,0 +1,17 @@
+{
+  "note": "Photos with a confirmed answer. Images are not stored here (most are other people's photos): put them in one folder and pass --images. 'args' are the extra resect arguments for the case; 'truth' is where the camera was, 'tolerance_m' how close counts as solved.",
+  "cases": [
+    {"name": "lau-pa-sat", "image": "10.webp",
+     "args": ["--landmark", "Lau Pa Sat=545", "--landmark", "60 Robinson Road:right=205", "--radius", "250"],
+     "truth": {"lat": 1.27998, "lon": 103.85069, "heading": 341}, "tolerance_m": 40,
+     "source": "night photo of Lau Pa Sat from the Boon Tat Street / Raffles Quay corner (solved by hand, Nov 2026)"},
+    {"name": "bishan-221", "image": "16.webp",
+     "args": ["--block", "221=825", "--on-water", "--render", "--radius", "350"],
+     "truth": {"lat": 1.35778, "lon": 103.84899}, "tolerance_m": 400,
+     "source": "monitor lizard in the Kallang River, Bishan-Ang Mo Kio Park, Blk 221 Bishan St 23 behind (confirmed by the user)"},
+    {"name": "pasir-ris-588c", "image": "15.webp",
+     "args": ["--near", "1.37825,103.94730", "--radius", "150", "--render"],
+     "truth": {"lat": 1.37831, "lon": 103.94715, "heading": 16}, "tolerance_m": 40,
+     "source": "Blk 588C Pasir Ris Green level 15 rooftop garden over Sungei Api Api (photographer's caption)"}
+  ]
+}

@@ -95,6 +95,15 @@ def main(argv: list[str] | None = None) -> int:
     bn = sub.add_parser("build-names", help="Gazetteer of named places (schools, malls, CCs...) for sign reading")
     bn.add_argument("--out", default="place_names.json.gz")
 
+    bm = sub.add_parser("benchmark", help="Run resect on photos with a known answer and report how far off it is")
+    bm.add_argument("cases", help="benchmarks/cases.json")
+    bm.add_argument("--images", required=True, help="Folder with the case photos")
+    bm.add_argument("--buildings", required=True)
+    bm.add_argument("--names", help="place_names.json.gz")
+    bm.add_argument("--water", help="Water layer for cases using --render / --on-water")
+    bm.add_argument("--only", action="append", default=[], help="Run only these case names")
+    bm.add_argument("--out", help="Write the results as JSON here")
+
     ea = sub.add_parser("export-area", help="Plan-view map data for one box: all building outlines, water, green, roads")
     ea.add_argument("--bbox", required=True, help="south,west,north,east")
     ea.add_argument("--out", default="area.json.gz")
@@ -113,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--min-height", type=float, default=20.0, help="Ignore buildings lower than this (metres) in the outline")
     rs.add_argument("--block", help="NUMBER=X: a block number seen in the photo at column X; every block with that "
                                      "number in Singapore is tried (no --near needed)")
+    rs.add_argument("--render", action="store_true",
+                    help="Re-rank by render-and-compare: label the photo's pixels (sky, building, water, ...) and compare "
+                         "with the map drawn from each candidate (needs the segmenter release in $SG_GEOLOCATOR_MODELS)")
+    rs.add_argument("--water", help="Water layer (export-area file, e.g. the sgwater release) for --render / --on-water")
+    rs.add_argument("--on-water", action="store_true", help="Photo taken at the water's edge: only try spots on mapped water")
     rs.add_argument("--window", type=float, metavar="MIN_HEIGHT",
                     help="View from a high window: only try spots on buildings at least this tall (metres)")
     rs.add_argument("--names", help="place_names.json.gz (to resolve place names)")
@@ -285,6 +299,53 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(names.entries)} named places -> {args.out} (copy to ~/.cache/sg_geolocator/ to use)")
         return 0
 
+    if args.cmd == "benchmark":
+        import subprocess
+        from pathlib import Path
+
+        import numpy as np
+
+        spec = json.loads(Path(args.cases).read_text())
+        rows = []
+        for case in spec["cases"]:
+            if args.only and case["name"] not in args.only:
+                continue
+            img = Path(args.images) / case["image"]
+            if not img.exists():
+                print(f"{case['name']}: missing {img}", file=sys.stderr)
+                continue
+            cmd = [sys.executable, "-m", "sg_geolocator.cli", "resect", str(img), "--buildings", args.buildings, *case["args"]]
+            if args.names:
+                cmd += ["--names", args.names]
+            if args.water and ("--render" in case["args"] or "--on-water" in case["args"]):
+                cmd += ["--water", args.water]
+            import time
+
+            t = time.time()
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            lines = [l for l in res.stdout.splitlines() if l.startswith("{")]
+            spots = json.loads(lines[-1])["spots"] if lines else []
+            truth = case["truth"]
+            def off(sp):
+                return float(np.hypot((sp["lat"] - truth["lat"]) * 111000,
+                                      (sp["lon"] - truth["lon"]) * 111000 * np.cos(np.radians(1.35))))
+            dists = [off(sp) for sp in spots]
+            rank = next((i + 1 for i, d_ in enumerate(dists) if d_ <= case["tolerance_m"]), None)
+            row = {"name": case["name"], "error_m": round(dists[0], 1) if dists else None,
+                   "solved": bool(dists) and dists[0] <= case["tolerance_m"], "rank_of_first_correct": rank,
+                   "seconds": round(time.time() - t)}
+            if spots and "heading" in truth and "heading" in spots[0]:
+                row["heading_error"] = round(abs((spots[0]["heading"] - truth["heading"] + 180) % 360 - 180), 1)
+            if res.returncode:
+                row["error"] = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else f"exit {res.returncode}"
+            rows.append(row)
+            print(json.dumps(row), flush=True)
+        n = sum(r["solved"] for r in rows)
+        print(f"solved {n}/{len(rows)}", file=sys.stderr)
+        if args.out:
+            Path(args.out).write_text(json.dumps({"results": rows, "solved": n, "total": len(rows)}, indent=1))
+        return 0
+
     if args.cmd == "export-area":
         import gzip
 
@@ -320,6 +381,10 @@ def main(argv: list[str] | None = None) -> int:
             names = PlaceNames.load(args.names)
         width = Image.open(args.image).width
         landmarks = [_parse_landmark(t, b, names, width) for t in args.landmark]
+        if args.block and (args.render or args.on_water):
+            ranked = _render_block(args, b, width)
+            print(json.dumps({"image": args.image, "block": args.block.split("=")[0], "spots": ranked[: args.top]}))
+            return 0
         if args.block:
             num, x = args.block.rsplit("=", 1)
             x = float(x) / width if float(x) > 1 else float(x)
@@ -344,8 +409,12 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         spots = plan2d.resect(b, edges, lat, lon, args.radius, landmarks, hfovs, args.step, min_height=args.min_height,
                               top=args.top, window_min_height=args.window, log=lambda m: print(m, file=sys.stderr))
-        for s_ in spots:  # stage 2: height, now that the spot and heading are fixed
-            s_["height"] = plan2d.fit_height(b, args.image, s_["lat"], s_["lon"], s_["heading"], s_["hfov"])
+        if args.render:  # stage 2: render-and-compare around each plan-view answer (height comes with it)
+            spots = _render_rerank(args, b, spots)
+        else:
+            for s_ in spots:  # stage 2: height from the skyline, now that the spot and heading are fixed
+                s_["height"] = plan2d.fit_height(b, args.image, s_["lat"], s_["lon"], s_["heading"], s_["hfov"])
+        for s_ in spots:
             s_["map"] = f"https://www.google.com/maps?q={s_['lat']},{s_['lon']}"
         print(json.dumps({"image": args.image, "photo_edges": [round(float(x), 4) for x in edges], "spots": spots}))
         return 0
@@ -471,6 +540,82 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.md_out, "w") as fh:
             fh.write(md)
     return 0
+
+
+def _render_setup(args):
+    import numpy as np
+
+    from . import scene
+
+    water = scene.load_water(args.water) if args.water else []
+    labels = scene.Segmenter().labels(args.image, width=64)
+    eyes = np.array([1.2, 3.0]) if not args.window else np.arange(args.window * 0.3, args.window * 1.6, 6.0)
+    return scene, water, labels, eyes, np.arange(0.30, 0.71, 0.03)
+
+
+def _render_rerank(args, b, spots):
+    """Stage 2 for plan-view answers: search spot (+-1 step), heading (+-6 deg), eye height and
+    horizon row around each, by how well the drawn map agrees with the labelled photo."""
+    import numpy as np
+
+    from . import plan2d
+
+    scene, water, labels, eyes, horizons = _render_setup(args)
+    out = []
+    for s_ in spots:
+        sc = scene.MapScene(b, s_["lat"], s_["lon"], 1300, water)
+        c = plan2d.to_xy(s_["lat"], s_["lon"])
+        near = [c + (dx, dy) for dx in (-args.step, 0, args.step) for dy in (-args.step, 0, args.step)]
+        hd0 = s_["heading"]
+        best = scene.search(sc, labels, near, lambda cam, hf: [hd0 - 6, hd0 - 3, hd0, hd0 + 3, hd0 + 6], [s_["hfov"]],
+                            eyes, horizons)
+        ag, cam, hd, hf, eye, hz = best
+        la, lo = plan2d.to_latlon(cam)
+        out.append({**s_, "lat": round(la, 6), "lon": round(lo, 6), "heading": round(hd, 1), "agreement": round(ag, 4),
+                    "eye_m": eye, "horizon": round(hz, 3)})
+        print(f"  render: {la:.5f},{lo:.5f} agreement {ag:.3f}", file=sys.stderr)
+    return sorted(out, key=lambda o: -o["agreement"])
+
+
+def _render_block(args, b, width):
+    """A block number at a known column: for every block with that number, search spots
+    (on mapped water with --on-water, else a grid around it) with the heading pinned by the
+    block's direction; rank by render-and-compare."""
+    import numpy as np
+    from PIL import Image
+
+    from . import plan2d
+    from .skyline import _exif_hfov
+
+    scene, water, labels, eyes, horizons = _render_setup(args)
+    num, x = args.block.rsplit("=", 1)
+    x = float(x) / width if float(x) > 1 else float(x)
+    hfov = args.hfov or _exif_hfov(Image.open(args.image))
+    hfovs = [hfov] if hfov else [50.0, 60.0, 70.0]
+    out = []
+    for bid in plan2d.block_candidates(b, num):
+        c0 = b.footprint(bid)[0].mean(0)
+        cxy = plan2d.to_xy(*c0)
+        sc = scene.MapScene(b, float(c0[0]), float(c0[1]), args.radius + 1000, water)
+        if args.on_water:
+            spots = scene.water_spots(sc, cxy, args.radius, max(args.step, 10.0))
+        else:
+            k = int(args.radius // max(args.step, 10.0))
+            st = max(args.step, 10.0)
+            spots = [cxy + (i * st, j * st) for i in range(-k, k + 1) for j in range(-k, k + 1)
+                     if 30 <= np.hypot(i, j) * st <= args.radius]
+        if not len(spots):
+            print(f"  {b.labels[bid]}: no candidate spots", file=sys.stderr)
+            continue
+        best = scene.search(sc, labels, spots, lambda cam, hf: [plan2d._bearing(cxy - cam) - plan2d.angle_from_x(x, hf)],
+                            hfovs, eyes, horizons)
+        ag, cam, hd, hf, eye, hz = best
+        la, lo = plan2d.to_latlon(cam)
+        print(f"  {b.labels[bid]}: agreement {ag:.3f} ({len(spots)} spots)", file=sys.stderr)
+        out.append({"block": b.labels[bid], "lat": round(la, 6), "lon": round(lo, 6), "heading": round(hd, 1),
+                    "hfov": hf, "eye_m": eye, "horizon": round(hz, 3), "agreement": round(ag, 4),
+                    "map": f"https://www.google.com/maps?q={la:.6f},{lo:.6f}"})
+    return sorted(out, key=lambda o: -o["agreement"])
 
 
 def _parse_landmark(text: str, buildings, names, width: int):

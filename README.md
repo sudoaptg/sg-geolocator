@@ -84,6 +84,27 @@ landmarks give `--near` (lat,lon or a place) and `--radius`. On a night photo of
 with two landmarks it places the camera at the Boon Tat Street / Raffles Quay corner,
 facing north-north-west, in about 20 seconds.
 
+### Render-and-compare and the benchmark
+
+`--render` adds a second check: every pixel of the photo is labelled (sky, building, water,
+greenery, ground) by a small segmentation model (SegFormer-B0, published by the **Publish
+scene segmenter** workflow; NVIDIA licence, non-commercial), and the map is drawn from each
+candidate camera (buildings as walls and roofs, mapped water on the ground). Candidates are
+ranked by how much the two agree, with eye height and horizon fitted along the way.
+`--water` takes a water layer (the **Export area** workflow with `layers=water`), and
+`--on-water` searches only spots on the water, for photos taken at a river's edge:
+
+```bash
+sg-geolocate resect lizard.jpg --buildings buildings.npz --water sgwater.json.gz --block 221=825 --on-water --render
+```
+
+On that photo (Kallang River, Bishan) edges alone ranked the right Blk 221 third of eleven;
+render-and-compare ranks it first.
+
+`sg-geolocate benchmark benchmarks/cases.json --images DIR --buildings ...` runs every
+confirmed case and reports the error in metres and degrees, so changes are judged on
+numbers rather than one example.
+
 ## Try it on your own photos (on GitHub)
 
 Upload photos to the [`photos/`](photos/) folder (**Add file → Upload files**). The **Locate

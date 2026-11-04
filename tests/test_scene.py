@@ -1,0 +1,33 @@
+import numpy as np
+
+from sg_geolocator import scene as S
+from sg_geolocator.plan2d import to_xy
+
+from test_plan2d import _blocks
+
+
+def test_render_puts_sky_above_and_buildings_ahead():
+    b = _blocks()
+    sc = S.MapScene(b, 1.35, 103.80, 2000)
+    img = sc.render(to_xy(1.35, 103.80), 1.5, 40.0, 70.0, 0.5, 120, 90)
+    assert (img[0] == S.SKY).mean() > 0.5  # top row mostly sky
+    assert (img == S.BUILDING).any()  # the 60 m block to the north-east is in view
+    assert (img[-1] == S.GROUND).all()
+
+
+def test_agreement_prefers_the_true_pose():
+    b = _blocks()
+    sc = S.MapScene(b, 1.35, 103.80, 2000)
+    cam = to_xy(1.35, 103.80)
+    photo = sc.render(cam, 1.5, 40.0, 70.0, 0.5, 120, 90)
+    right = S.agreement(photo, photo)
+    wrong = S.agreement(photo, sc.render(cam, 1.5, 200.0, 70.0, 0.5, 120, 90))
+    assert right == 1.0 and wrong < 0.9
+
+
+def test_water_spots_lie_on_water():
+    b = _blocks()
+    ring = [[1.3490, 103.7990], [1.3490, 103.8000], [1.3495, 103.8000], [1.3495, 103.7990], [1.3490, 103.7990]]
+    sc = S.MapScene(b, 1.35, 103.80, 2000, water=[ring])
+    spots = S.water_spots(sc, to_xy(1.3492, 103.7995), 200, 10)
+    assert len(spots) > 5 and S.inside(sc.water[0], spots).all()
