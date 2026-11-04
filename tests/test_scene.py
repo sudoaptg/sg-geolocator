@@ -69,3 +69,15 @@ def test_edge_trust_and_rail_cues():
     labels[:5, :2] = S.GREEN
     assert not S.edges_trustworthy(labels)  # 60% water and greenery
     assert S.rail_in_view({"railing": 0.08, "bridge": 0.06}) and not S.rail_in_view({"building": 0.9})
+
+
+def test_skyline_outline_and_tower_count():
+    from sg_geolocator import raster as R
+
+    labels = np.full((40, 60), S.SKY)
+    for x0, x1, top in ((5, 15, 10), (25, 35, 5), (45, 55, 12)):  # three towers with sky between
+        labels[top:, x0:x1] = S.BUILDING
+    labels[30:] = S.WATER
+    rows = R.photo_outline(labels)
+    assert rows[10] == 10 and rows[20] == 30  # tower top; open sky down to the water
+    assert R.count_towers(rows, 40) == 3

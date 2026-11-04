@@ -390,3 +390,74 @@ def search_waters(plan: "Plan", labels: np.ndarray, buildings=None, top: int = 5
         if log:
             log(f"  {la:.5f},{lo:.5f}: quick {quick[k][0]:.3f} -> full {ag:.3f}")
     return sorted(out, key=lambda o: -o["agreement"])
+
+
+# --------------------------------------------------------------------------- skyline outline check
+
+
+def _outline_rows(pr: "PlanRaster", cam, eye, heading, hfov, horizon, width, height) -> np.ndarray:
+    """Row (0 = top) where sky meets buildings/trees in each column, as the map sees it:
+    only the highest thing in each line of sight matters, so this skips the per-pixel work."""
+    cols = (np.arange(width) + 0.5) / width
+    az = np.radians(heading + angle_from_x(cols, hfov))
+    pos = np.asarray(cam)[None, None, :] + _SAMPLES[None, :, None] * np.stack([np.sin(az), np.cos(az)], -1)[:, None, :]
+    ij = ((pos - pr.origin) / pr.res).astype(int)
+    inside = (ij[..., 0] >= 0) & (ij[..., 0] < pr.n) & (ij[..., 1] >= 0) & (ij[..., 1] < pr.n)
+    ij = np.clip(ij, 0, pr.n - 1)
+    h = np.where(inside, pr.height[ij[..., 0], ij[..., 1]], 0.0)
+    el = np.where(h > 0, np.arctan2(h - eye, _SAMPLES[None, :]), -np.inf).max(1)
+    f = (width / 2) / np.tan(np.radians(hfov / 2))
+    rows = horizon * height - f * np.tan(np.clip(el, -1.4, 1.4))
+    return np.clip(np.where(np.isfinite(el), rows, horizon * height), 0, height)
+
+
+def photo_outline(labels: np.ndarray) -> np.ndarray:
+    """Row where the sky ends in each column of the labelled photo."""
+    nonsky = labels != SKY
+    return np.where(nonsky.any(0), nonsky.argmax(0), labels.shape[0]).astype(float)
+
+
+def count_towers(rows: np.ndarray, height: int, prominence: float = 0.03) -> int:
+    """Separate peaks in a skyline (rows: smaller = higher): towers with sky between them."""
+    prof = -np.convolve(rows, np.ones(3) / 3, mode="same")
+    n, peaks = len(prof), 0
+    for i in range(1, n - 1):
+        if prof[i] >= prof[i - 1] and prof[i] > prof[i + 1]:
+            left = prof[:i][::-1]
+            right = prof[i + 1:]
+            def drop(side):
+                higher = np.flatnonzero(side > prof[i])
+                seg = side[: higher[0]] if len(higher) else side
+                return prof[i] - seg.min() if len(seg) else 0.0
+            if min(drop(left), drop(right)) >= prominence * height:
+                peaks += 1
+    return peaks
+
+
+def outline_check(pr: "PlanRaster", labels_wide: np.ndarray, cam0, hd0: float, hfovs, eyes, horizons,
+                  radius_m: float = 40.0, step_m: float = 10.0, dhd: float = 15.0) -> dict:
+    """Best skyline-outline fit around a candidate: median row error (share of the frame
+    height) and how far the number of separate towers differs from the photo's."""
+    h, w = labels_wide.shape
+    target = photo_outline(labels_wide)
+    n_photo = count_towers(target, h)
+    best = (9.0, None, 0.0, 0.0, 0.0, 0.0, 0)
+    for dx in np.arange(-radius_m, radius_m + 0.1, step_m):
+        for dy in np.arange(-radius_m, radius_m + 0.1, step_m):
+            cam = np.asarray(cam0) + (dx, dy)
+            i, j = ((cam - pr.origin) / pr.res).astype(int)
+            if not (0 <= i < pr.n and 0 <= j < pr.n) or pr.height[i, j] > 0:
+                continue  # not inside a building
+            for hd in np.arange(hd0 - dhd, hd0 + dhd + 0.1, 3.0):
+                for hf in hfovs:
+                    for eye in eyes:
+                        for hz in horizons:
+                            r = _outline_rows(pr, cam, eye, hd, hf, hz, w, h)
+                            e = float(np.median(np.abs(r - target))) / h
+                            if e < best[0]:
+                                best = (e, cam, float(hd), float(hf), float(eye), float(hz), 0)
+    e, cam, hd, hf, eye, hz, _ = best
+    n_map = count_towers(_outline_rows(pr, cam, eye, hd, hf, hz, w, h), h) if cam is not None else 0
+    return {"outline_error": e, "cam": cam, "heading": hd % 360, "hfov": hf, "eye_m": eye, "horizon": hz,
+            "towers_photo": n_photo, "towers_map": n_map,
+            "tower_miss": abs(n_map - n_photo) / max(1, n_photo)}
