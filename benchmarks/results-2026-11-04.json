@@ -1,0 +1,29 @@
+{
+ "results": [
+  {
+   "name": "lau-pa-sat",
+   "error_m": 49.5,
+   "solved": false,
+   "rank_of_first_correct": 2,
+   "seconds": 24,
+   "heading_error": 2.7
+  },
+  {
+   "name": "bishan-221",
+   "error_m": 199.7,
+   "solved": true,
+   "rank_of_first_correct": 1,
+   "seconds": 624
+  },
+  {
+   "name": "pasir-ris-588c",
+   "error_m": 132.2,
+   "solved": false,
+   "rank_of_first_correct": null,
+   "seconds": 500,
+   "heading_error": 146.8
+  }
+ ],
+ "solved": 1,
+ "total": 3
+}
