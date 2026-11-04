@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
 
     bm = sub.add_parser("benchmark", help="Run resect on photos with a known answer and report how far off it is")
     bm.add_argument("cases", help="benchmarks/cases.json")
-    bm.add_argument("--images", required=True, help="Folder with the case photos")
+    bm.add_argument("--images", default="benchmarks/photos", help="Folder with the case photos")
     bm.add_argument("--buildings", required=True)
     bm.add_argument("--names", help="place_names.json.gz")
     bm.add_argument("--water", help="Water layer for cases using --render / --on-water")
@@ -632,7 +632,7 @@ def _render_area(args, b, lat, lon):
         spots = list(raster.facade_spots(plan.near(lat, lon, args.radius), lat, lon, args.radius))
     print(f"  {len(spots)} spots", file=sys.stderr)
     hfovs = [args.hfov] if args.hfov else [50.0, 62.0, 75.0]
-    ag, cam, hd, hf, eye, hz = raster.search(pr, labels, spots, lambda cam, hf: list(np.arange(0, 360, 10.0)), hfovs,
+    ag, cam, hd, hf, eye, hz = raster.search(pr, labels, spots, lambda cam, hf: list(np.arange(0, 360, 12.0)), hfovs,
                                              eyes, horizons, keep=40)
     la, lo = plan2d.to_latlon(cam)
     return [{"lat": round(la, 6), "lon": round(lo, 6), "heading": round(hd, 1), "hfov": hf, "eye_m": eye,

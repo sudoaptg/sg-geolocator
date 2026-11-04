@@ -38,6 +38,21 @@ def _area(xy: np.ndarray) -> float:
     return float(abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))) / 2)
 
 
+def _known_heights(buildings) -> dict:
+    """Address -> roof height from a Buildings file (e.g. HDB storeys), computed once."""
+    cached = getattr(buildings, "_known_heights", None)
+    if cached is None:
+        cached = {}
+        if buildings.labels:
+            ids, first = np.unique(buildings.ids, return_index=True)
+            for i, k in zip(ids, first):
+                label = buildings.labels[int(i)] if int(i) < len(buildings.labels) else ""
+                if label and buildings.heights[k] > 0:
+                    cached[label.lower()] = float(buildings.heights[k])
+        buildings._known_heights = cached
+    return cached
+
+
 class PlanRaster:
     """Kinds and heights on a grid around (lat, lon). `plan` is an export-area dict (buildings,
     water, green); `buildings` (optional) supplies known heights (e.g. HDB storeys) by address."""
@@ -52,11 +67,7 @@ class PlanRaster:
         kind = Image.new("L", (n, n), GROUND)
         height = Image.new("F", (n, n), 0.0)
         dk, dh = ImageDraw.Draw(kind), ImageDraw.Draw(height)
-        known = {}
-        if buildings is not None and buildings.labels:
-            for i, label in enumerate(buildings.labels):
-                if label:
-                    known[label.lower()] = float(buildings.heights[buildings.ids == i][0])
+        known = _known_heights(buildings) if buildings is not None else {}
 
         def cells(pts):
             xy = to_xy(*np.asarray(pts, float).T)
@@ -143,34 +154,64 @@ def composition(labels: np.ndarray) -> dict:
                                                                  ("green", GREEN))}
 
 
+_JOB = {}  # shared with forked workers: the raster, labels and ranges of the current search
+
+
+def _rough(task):
+    cam, hd, hf = task
+    J = _JOB
+    cw, ch = J["coarse_size"]
+    return max(agreement(J["small"], J["raster"].render(cam, e, hd, hf, hz, cw, ch))
+               for e in J["eyes_c"] for hz in J["horizons_c"])
+
+
+def _fine(task):
+    cam, hd, hf = task
+    J = _JOB
+    h, w = J["labels"].shape
+    return max((agreement(J["labels"], J["raster"].render(cam, e, hd, hf, hz, w, h)), e, hz)
+               for e in J["eyes"] for hz in J["horizons"])
+
+
+def _map(fn, tasks, workers):
+    if workers <= 1 or len(tasks) < 64:
+        return [fn(t) for t in tasks]
+    import multiprocessing as mp
+
+    with mp.get_context("fork").Pool(workers) as pool:  # workers inherit the raster; nothing big is sent
+        return pool.map(fn, tasks, chunksize=max(16, len(tasks) // (workers * 8)))
+
+
 def search(raster: PlanRaster, labels: np.ndarray, spots, headings_for, hfovs, eyes, horizons, keep: int = 30,
-           coarse_size=(24, 18)):
+           coarse_size=(24, 18), workers: int | None = None):
     """Coarse to fine: every (spot, heading) at a small size with a middle eye height and
-    view, then the full grid of eye heights, views and horizon rows for the best `keep`."""
+    view, then the full grid of eye heights, views and horizon rows for the best `keep`.
+    Both stages run on all CPU cores."""
+    import os
+
     from PIL import Image
 
+    workers = workers or os.cpu_count() or 1
     hfovs, eyes, horizons = list(hfovs), list(eyes), list(horizons)
-    small = np.asarray(Image.fromarray(labels).resize(coarse_size, Image.NEAREST))
-    cw, ch = coarse_size
-    rough = []
-    for cam in spots:
-        hf = hfovs[len(hfovs) // 2]
-        for hd in headings_for(cam, hf):
-            best = max((agreement(small, raster.render(cam, e, hd, hf, hz, cw, ch)), e, hz)
-                       for e in eyes[len(eyes) // 2: len(eyes) // 2 + 1] for hz in horizons[::2])
-            rough.append((best[0], np.asarray(cam, float), float(hd)))
-    rough.sort(key=lambda r: -r[0])
-    h, w = labels.shape
-    best = (-1.0, None, 0.0, 0.0, 0.0, 0.0)
-    for _, cam, hd0 in rough[:keep]:
+    _JOB.update(raster=raster, labels=labels, coarse_size=coarse_size, eyes=eyes, horizons=horizons,
+                small=np.asarray(Image.fromarray(labels).resize(coarse_size, Image.NEAREST)),
+                eyes_c=eyes[len(eyes) // 2: len(eyes) // 2 + 1], horizons_c=horizons[::2])
+    hf_mid = hfovs[len(hfovs) // 2]
+    tasks = [(np.asarray(cam, float), float(hd), hf_mid) for cam in spots for hd in headings_for(cam, hf_mid)]
+    scores = _map(_rough, tasks, workers)
+    order = np.argsort(scores)[::-1][:keep]
+    fine = []
+    for k in order:
+        cam, hd0, _ = tasks[k]
         for hf in hfovs:
             pinned = headings_for(cam, hf)
             for hd in (pinned if len(pinned) == 1 else (hd0 - 6, hd0 - 3, hd0, hd0 + 3, hd0 + 6)):
-                for e in eyes:
-                    for hz in horizons:
-                        s = agreement(labels, raster.render(cam, e, hd, hf, hz, w, h))
-                        if s > best[0]:
-                            best = (s, cam, hd % 360, hf, e, hz)
+                fine.append((cam, float(hd), float(hf)))
+    results = _map(_fine, fine, workers)
+    best = (-1.0, None, 0.0, 0.0, 0.0, 0.0)
+    for (cam, hd, hf), (sc, e, hz) in zip(fine, results):
+        if sc > best[0]:
+            best = (sc, cam, hd % 360, hf, e, hz)
     return best
 
 
@@ -225,7 +266,7 @@ class Plan:
 
 
 def facade_spots(plan_part: dict, lat: float, lon: float, radius_m: float, min_area: float = 300.0,
-                 step_m: float = 16.0) -> np.ndarray:
+                 step_m: float = 24.0) -> np.ndarray:
     """Points along the outlines of block-sized buildings (footprint over `min_area`) within
     `radius_m`: where a photo from a high window or a rooftop can have been taken."""
     c = to_xy(lat, lon)
