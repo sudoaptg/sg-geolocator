@@ -111,6 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     bm.add_argument("--only", action="append", default=[], help="Run only these case names")
     bm.add_argument("--out", help="Write the results as JSON here")
 
+    cr = sub.add_parser("collect-reddit", help="Candidate test photos from a subreddit: links + the place the title names")
+    cr.add_argument("--sub", default="SingaporePhotography")
+    cr.add_argument("--pages", type=int, default=5, help="Pages of 100 posts per listing")
+    cr.add_argument("--names", help="place_names.json.gz (precise places in titles)")
+    cr.add_argument("--out", default="benchmarks/reddit.json")
+
     ea = sub.add_parser("export-area", help="Plan-view map data for one box: all building outlines, water, green, roads")
     ea.add_argument("--bbox", required=True, help="south,west,north,east")
     ea.add_argument("--out", default="area.json.gz")
@@ -377,6 +383,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"solved {n}/{len(rows)}", file=sys.stderr)
         if args.out:
             Path(args.out).write_text(json.dumps({"results": rows, "solved": n, "total": len(rows)}, indent=1))
+        return 0
+
+    if args.cmd == "collect-reddit":
+        from . import reddit
+
+        names = None
+        if args.names:
+            from .placenames import PlaceNames
+
+            names = PlaceNames.load(args.names)
+        posts = reddit.collect(args.sub, names, args.pages, log=lambda m: print(m, file=sys.stderr))
+        with open(args.out, "w") as f:
+            json.dump({"source": f"https://www.reddit.com/r/{args.sub}/", "note": "links only; photos belong to their "
+                       "posters and are downloaded on the fly by the benchmark", "posts": posts}, f, indent=1)
+        print(f"{len(posts)} posts with an image and a place in the title -> {args.out}")
         return 0
 
     if args.cmd == "export-area":

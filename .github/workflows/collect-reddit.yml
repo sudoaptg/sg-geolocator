@@ -1,0 +1,43 @@
+name: Collect Reddit test photos
+
+# Pulls posts from r/SingaporePhotography whose titles name a place, and saves links + the
+# place (not the photos) to benchmarks/reddit.json. Unauthenticated: Reddit may refuse.
+on:
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: "Pages of 100 posts per listing"
+        default: "5"
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - name: Place names (from the latest map release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release list --limit 40 --json tagName --jq '.[].tagName' | grep '^map-' | head -1)
+          gh release download "$tag" --pattern place_names.json.gz || true
+      - name: Collect
+        run: |
+          args=""; [ -f place_names.json.gz ] && args="--names place_names.json.gz"
+          sg-geolocate collect-reddit --pages "${{ inputs.pages }}" $args --out benchmarks/reddit.json
+          head -c 600 benchmarks/reddit.json
+      - name: Save to the repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/reddit.json
+          git diff --cached --quiet || (git commit -m "Reddit test photo links (r/SingaporePhotography)" && git push)
