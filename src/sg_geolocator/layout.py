@@ -3,7 +3,7 @@
 A drone photo shows the layout of an estate: here, rows of long slab blocks lying parallel,
 one behind another, with forest further away. Those patterns need only footprints, so the
 whole island can be filtered in seconds before any rendering. The places that fit are then
-ranked by render-and-compare from drone heights (camera 60-150 m up, standing back from the
+ranked by render-and-compare from drone heights (camera 25-200 m up, standing back from the
 nearest slab and looking along the stack).
 """
 
@@ -101,7 +101,8 @@ def candidate_views(plan: "R.Plan", buildings=None, min_slabs: int = 4, forest: 
 
 def drone_search(plan: "R.Plan", labels: np.ndarray, buildings=None, min_slabs: int = 4, forest: bool = True,
                  top: int = 5, log=None) -> list[dict]:
-    """Layout filter, then render-and-compare from drone heights at every place that fits."""
+    """Layout filter, then render-and-compare from drone heights (25-200 m, horizon from well
+    above the frame to a fifth of the way down) at every place that fits."""
     views = candidate_views(plan, buildings, min_slabs, forest)
     if log:
         log(f"  {len(views)} places with {min_slabs}+ stacked slabs" + (" and forest beyond" if forest else ""))
@@ -113,7 +114,8 @@ def drone_search(plan: "R.Plan", labels: np.ndarray, buildings=None, min_slabs: 
         n = np.array([u[1], -u[0]])
         spots = [c - u * back + n * side for back in (100, 200, 300) for side in (-100, 0, 100)]
         ag, cam, hd, hf, eye, hz = R.search(pr, labels, spots, lambda cm, h: list(np.arange(view - 20, view + 21, 5.0)),
-                                            [55.0, 70.0], [60.0, 90.0, 120.0, 150.0], np.arange(-0.10, 0.21, 0.05),
+                                            [50.0, 60.0, 70.0], [25.0, 40.0, 60.0, 90.0, 120.0, 150.0, 200.0],
+                                            np.arange(-0.25, 0.21, 0.05),
                                             keep=12)
         a, b = to_latlon(cam)
         out.append({"lat": round(a, 6), "lon": round(b, 6), "heading": round(hd, 1), "hfov": hf, "eye_m": eye,
