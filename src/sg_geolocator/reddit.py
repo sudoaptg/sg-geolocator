@@ -35,18 +35,36 @@ TOWNS = {
 _IMAGE = re.compile(r"\.(jpe?g|png|webp)(\?|$)", re.I)
 
 
-def fetch_posts(sub: str, listing: str = "top", t: str = "all", pages: int = 5, log=print) -> list[dict]:
-    """Posts from /r/sub/<listing>.json (up to 100 per page)."""
+def _session():
+    """A requests session; with REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET set (a free "script"
+    app from reddit.com/prefs/apps), an app-only OAuth token and the oauth.reddit.com host,
+    which Reddit doesn't block from cloud servers. Returns (session, base url)."""
+    import os
+
     import requests
 
-    out, after = [], None
     s = requests.Session()
     s.headers["User-Agent"] = USER_AGENT
+    cid, secret = os.environ.get("REDDIT_CLIENT_ID"), os.environ.get("REDDIT_CLIENT_SECRET")
+    if cid and secret:
+        r = s.post("https://www.reddit.com/api/v1/access_token", auth=(cid, secret),
+                   data={"grant_type": "client_credentials"}, timeout=30)
+        r.raise_for_status()
+        s.headers["Authorization"] = f"bearer {r.json()['access_token']}"
+        return s, "https://oauth.reddit.com"
+    return s, "https://www.reddit.com"
+
+
+def fetch_posts(sub: str, listing: str = "top", t: str = "all", pages: int = 5, log=print, session=None) -> list[dict]:
+    """Posts from /r/sub/<listing> (up to 100 per page)."""
+    out, after = [], None
+    s, base = session or _session()
     for _ in range(pages):
         params = {"limit": 100, "t": t, "raw_json": 1}
         if after:
             params["after"] = after
-        r = s.get(f"https://www.reddit.com/r/{sub}/{listing}.json", params=params, timeout=30)
+        r = s.get(f"{base}/r/{sub}/{listing}.json" if "oauth" not in base else f"{base}/r/{sub}/{listing}",
+                  params=params, timeout=30)
         if r.status_code != 200:
             log(f"  reddit returned {r.status_code} for {listing}: {r.text[:120]!r}")
             break
@@ -90,8 +108,10 @@ def place_in(title: str, names=None) -> tuple[str, float, float, str] | None:
 
 def collect(sub: str, names=None, pages: int = 5, log=print) -> list[dict]:
     seen, out = set(), []
+    session = _session()
+    log("  using " + ("an OAuth app key" if "oauth" in session[1] else "anonymous access (often refused from cloud servers)"))
     for listing, t in (("top", "all"), ("top", "year"), ("new", "all")):
-        posts = fetch_posts(sub, listing, t, pages, log)
+        posts = fetch_posts(sub, listing, t, pages, log, session)
         log(f"  {listing}/{t}: {len(posts)} posts")
         for p in posts:
             if p.get("id") in seen or p.get("over_18"):

@@ -1,7 +1,8 @@
 name: Collect Reddit test photos
 
 # Pulls posts from r/SingaporePhotography whose titles name a place, and saves links + the
-# place (not the photos) to benchmarks/reddit.json. Unauthenticated: Reddit may refuse.
+# place (not the photos) to benchmarks/reddit.json. Needs repo secrets REDDIT_CLIENT_ID /
+# REDDIT_CLIENT_SECRET in practice: Reddit refuses anonymous requests from GitHub's servers.
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +32,9 @@ jobs:
           tag=$(gh release list --limit 40 --json tagName --jq '.[].tagName' | grep '^map-' | head -1)
           gh release download "$tag" --pattern place_names.json.gz || true
       - name: Collect
+        env:  # optional: a free "script" app from reddit.com/prefs/apps; without it Reddit usually refuses (403)
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
         run: |
           args=""; [ -f place_names.json.gz ] && args="--names place_names.json.gz"
           sg-geolocate collect-reddit --pages "${{ inputs.pages }}" $args --out benchmarks/reddit.json
