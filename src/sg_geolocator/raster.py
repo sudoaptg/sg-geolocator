@@ -234,12 +234,18 @@ class Plan:
         self._pts = {kind: [to_xy(*np.asarray(it["pts"], float).T) for it in self.data.get(kind, [])]
                      for kind in ("water", "green")}
 
+    _cache: dict = {}
+
     @classmethod
     def load(cls, path) -> "Plan":
+        """Load once per process (the island-wide file takes a few seconds)."""
         import gzip
         import json
 
-        return cls(json.load(gzip.open(path, "rt")))
+        key = str(path)
+        if key not in cls._cache:
+            cls._cache[key] = cls(json.load(gzip.open(path, "rt")))
+        return cls._cache[key]
 
     @classmethod
     def from_buildings(cls, buildings, water=None) -> "Plan":

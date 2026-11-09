@@ -33,6 +33,15 @@ class Segmenter:
     """SegFormer-B0 (ADE20K). Weights from $SG_GEOLOCATOR_MODELS/segformer (the segmenter
     release) or the Hugging Face hub."""
 
+    _shared = None
+
+    @classmethod
+    def shared(cls) -> "Segmenter":
+        """One model per process (loading it is the slow part when locating many photos)."""
+        if cls._shared is None:
+            cls._shared = cls()
+        return cls._shared
+
     def __init__(self, model: str = "nvidia/segformer-b0-finetuned-ade-512-512"):
         import os
         from pathlib import Path

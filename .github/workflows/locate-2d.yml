@@ -1,0 +1,102 @@
+name: Locate with 2D + render (and benchmark)
+
+# Runs `predict --refine` (the usual guess, then resect --auto: block numbers, rail, water,
+# drone layouts, render-and-compare) on every photo in a folder, then the benchmark. Results
+# go to the run's summary and are saved under benchmarks/runs/.
+on:
+  workflow_dispatch:
+    inputs:
+      folder:
+        description: "Folder of photos to locate"
+        default: "benchmarks/initial"
+      benchmark:
+        description: "Also run the benchmark"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  locate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - name: Download indexes and map data (latest releases)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          tags = [t["tagName"] for t in json.loads(subprocess.check_output(["gh", "release", "list", "--limit", "60", "--json", "tagName"]))]
+          want = {"index.npz": None, "geocell.npz": None, "places.npz": None, "mapmatch.npz": None, "buildings.npz": None,
+                  "place_names.json.gz": None, "transit.json.gz": None}
+          for t in tags:  # newest first
+              assets = {a["name"] for a in json.loads(subprocess.check_output(["gh", "release", "view", t, "--json", "assets"]))["assets"]}
+              for name in [n for n, v in want.items() if v is None and n in assets]:
+                  subprocess.check_call(["gh", "release", "download", t, "--pattern", name, "--clobber"])
+                  want[name] = t
+          for prefix, out in (("area-sgplan2-", "sgplan.json.gz"), ("area-sgwater-", "sgwater.json.gz")):
+              t = next(x for x in tags if x.startswith(prefix))
+              subprocess.check_call(["gh", "release", "download", t, "--pattern", "area.json.gz", "--output", out, "--clobber"])
+          print(json.dumps(want, indent=1))
+          PY
+          mkdir -p ~/.cache/sg_geolocator && cp place_names.json.gz ~/.cache/sg_geolocator/
+          ls -lh *.npz *.json.gz
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-v1
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch
+          key: torch-hub-eigenplaces/ResNet50/512
+      - name: Locate
+        run: |
+          shopt -s nullglob nocaseglob
+          files=("${{ inputs.folder }}"/*.jpg "${{ inputs.folder }}"/*.jpeg "${{ inputs.folder }}"/*.png "${{ inputs.folder }}"/*.webp)
+          sg-geolocate predict "${files[@]}" --index index.npz --geocell geocell.npz --places places.npz --map mapmatch.npz \
+            --buildings buildings.npz --plan sgplan.json.gz --transit transit.json.gz --no-exif --refine | grep '^{' > results.jsonl
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          print("## Locations\n\n| photo | first guess | refined (2D + render) |\n|---|---|---|")
+          for line in open("results.jsonl"):
+              r = json.loads(line)
+              g = f"[{r['label']}]({r['map']}) ({r['confidence']:.0%})" if "lat" in r else r.get("error", "")
+              ref = "<br>".join(f"[{s.get('block') or ''} {s['lat']:.5f},{s['lon']:.5f}]({s.get('map', '')})"
+                                for s in r.get("refined", [])[:3]) or "–"
+              print(f"| {r['image']} | {g} | {ref} |")
+          PY
+      - name: Benchmark
+        if: ${{ inputs.benchmark }}
+        run: |
+          sg-geolocate benchmark benchmarks/cases.json --buildings buildings.npz --names place_names.json.gz \
+            --water sgwater.json.gz --plan sgplan.json.gz --transit transit.json.gz --out bench.json
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          d = json.load(open("bench.json"))
+          print(f"\n## Benchmark: {d['solved']}/{d['total']} solved\n\n| case | error | solved | time |\n|---|---|---|---|")
+          for r in d["results"]:
+              print(f"| {r['name']} | {r['error_m']} m | {'yes' if r['solved'] else 'no'} | {r['seconds']} s |")
+          PY
+      - name: Save results to the repo
+        if: always()
+        run: |
+          stamp=$(date -u +%Y%m%d-%H%M)
+          mkdir -p benchmarks/runs
+          [ -f results.jsonl ] && cp results.jsonl "benchmarks/runs/locate-$stamp.jsonl"
+          [ -f bench.json ] && cp bench.json "benchmarks/runs/bench-$stamp.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add benchmarks/runs
+          git diff --cached --quiet || (git commit -m "Locate/benchmark results $stamp" && git pull --rebase -q && git push)

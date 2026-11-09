@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     ea.add_argument("--layers", default="buildings,water,green,roads", help="Which of buildings,water,green,roads")
 
     rs = sub.add_parser("resect", help="Where and which way a photo was taken: plan-view outline match first, height second")
-    rs.add_argument("image")
+    rs.add_argument("image", nargs="+", help="One or more photos (the map data is loaded once for all)")
     rs.add_argument("--buildings", required=True)
     rs.add_argument("--near", help="lat,lon or a place name to search around (default: the first landmark)")
     rs.add_argument("--radius", type=float, default=250.0, help="Search this many metres around --near")
@@ -421,13 +421,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"area -> {args.out}")
         return 0
 
+    if args.cmd == "resect" and len(args.image) > 1:  # one run per photo, sharing the loaded data
+        full = list(argv) if argv is not None else sys.argv[1:]
+        rest = [a for a in full if a not in args.image]
+        for img in args.image:
+            main([*rest[: rest.index("resect") + 1], img, *rest[rest.index("resect") + 1:]])
+        return 0
     if args.cmd == "resect":
+        args.image = args.image[0]
         from PIL import Image
 
         from . import plan2d
         from .skyline import Buildings, _exif_hfov
 
-        b = Buildings.load(args.buildings)
+        b = _buildings(args.buildings)
         names = None
         if args.names:
             from .placenames import PlaceNames
@@ -477,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
 
             if not args.plan:
                 raise SystemExit("--drone needs --plan")
-            labels = scene.Segmenter().labels(args.image, width=64)
+            labels = scene.Segmenter.shared().labels(args.image, width=64)
             spots = layout.drone_search(raster.Plan.load(args.plan), labels, b, args.slabs, not args.no_forest,
                                         top=args.top, log=lambda m: print(m, file=sys.stderr))
             print(json.dumps({"image": args.image, "spots": spots}))
@@ -487,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
 
             if not args.plan:
                 raise SystemExit("--anywhere-water needs --plan")
-            labels = scene.Segmenter().labels(args.image, width=64)
+            labels = scene.Segmenter.shared().labels(args.image, width=64)
             print(f"  photo: {raster.composition(labels)}", file=sys.stderr)
             spots = raster.search_waters(raster.Plan.load(args.plan), labels, b, top=args.top,
                                          log=lambda m: print(m, file=sys.stderr))
@@ -644,6 +651,18 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+_BUILDINGS: dict = {}
+
+
+def _buildings(path):
+    """Buildings file, loaded once per process."""
+    from .skyline import Buildings
+
+    if path not in _BUILDINGS:
+        _BUILDINGS[path] = Buildings.load(path)
+    return _BUILDINGS[path]
+
+
 def _refine_with_resect(img, pred, args) -> list:
     """Run `resect --auto` around a predict guess (or wherever the photo's own hints point)."""
     import contextlib
@@ -672,7 +691,7 @@ def _auto_hints(args, b):
     from . import plan2d, raster, scene
     from .clues import TextReader
 
-    seg = scene.Segmenter()
+    seg = scene.Segmenter.shared()
     labels = seg.labels(args.image, width=64)
     shares = seg.class_shares(args.image)
     comp = raster.composition(labels)
@@ -688,9 +707,12 @@ def _auto_hints(args, b):
     if scene.rail_in_view(shares) and args.block and not args.elevated_tracks and args.transit:
         args.elevated_tracks = scene.tracks_in_view(shares)
         found.append(f"elevated rail in view ({scene.rail_share(shares):.0%} of the photo: {args.elevated_tracks}+ tracks)")
-    if not args.block and not args.near and not args.landmark and comp["water"] >= 0.2 and args.plan:
+    if not args.block and not args.landmark and comp["water"] >= 0.2 and args.plan and not args.near:
         args.render = args.anywhere_water = True
-        found.append(f"mostly water ({comp['water']:.0%})")
+        found.append(f"mostly water ({comp['water']:.0%}): searching every lake/pond/river")
+    elif not args.block and not args.landmark and comp["sky"] < 0.05 and comp["building"] >= 0.5 and args.plan:
+        args.drone = True  # looking down on an estate, no sky: a drone or high oblique view
+        found.append(f"no sky, {comp['building']:.0%} buildings: drone view, searching estate layouts")
     if args.render is False and args.plan and not scene.edges_trustworthy(labels):
         args.render = True
     print(f"  auto: {', '.join(found) or 'no hints found'}", file=sys.stderr)
@@ -702,7 +724,7 @@ def _render_setup(args, b):
 
     from . import raster, scene
 
-    labels = scene.Segmenter().labels(args.image, width=64)
+    labels = scene.Segmenter.shared().labels(args.image, width=64)
     if args.plan:
         plan = raster.Plan.load(args.plan)
     else:
