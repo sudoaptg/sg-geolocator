@@ -1,0 +1,43 @@
+{
+ "results": [
+  {
+   "name": "lau-pa-sat",
+   "error_m": 49.5,
+   "solved": true,
+   "rank_of_first_correct": 1,
+   "seconds": 19,
+   "heading_error": 2.7
+  },
+  {
+   "name": "bishan-221",
+   "error_m": 189.7,
+   "solved": true,
+   "rank_of_first_correct": 1,
+   "seconds": 41
+  },
+  {
+   "name": "pasir-ris-588c",
+   "error_m": 123.7,
+   "solved": true,
+   "rank_of_first_correct": 1,
+   "seconds": 110,
+   "heading_error": 16.0
+  },
+  {
+   "name": "jurong-east-204",
+   "error_m": 0.2,
+   "solved": true,
+   "rank_of_first_correct": 1,
+   "seconds": 10
+  },
+  {
+   "name": "sengkang-riverside",
+   "error_m": 9960.7,
+   "solved": false,
+   "rank_of_first_correct": null,
+   "seconds": 296
+  }
+ ],
+ "solved": 4,
+ "total": 5
+}
