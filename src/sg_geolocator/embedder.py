@@ -136,8 +136,46 @@ def _trust_hub_repos(torch, repos: list[str]) -> None:
             f.write("".join(f"{r}\n" for r in missing))
 
 
+# MegaLoc (Berton & Masone, CVPR 2025 workshops): DINOv2 ViT-B/14 with SALAD-style
+# aggregation, trained on several place-recognition datasets at once. 8448-d descriptors;
+# dense indexes keep a PCA projection of them (see RetrievalIndex.project). MIT licence.
+MEGALOC = "megaloc"
+MEGALOC_SIZE = 322  # square input used in the official example (23 x 14 px patches)
+
+
+class MegaLocEmbedder:
+    def __init__(self, model_name: str = MEGALOC, device: str | None = None):
+        import torch
+
+        self._torch = torch
+        self.model_name = model_name
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        local = Path(torch.hub.get_dir()) / "gmberton_MegaLoc_main"
+        if local.is_dir():  # an unpacked copy: no GitHub API call
+            self.model = torch.hub.load(str(local), "get_trained_model", source="local")
+        else:
+            self.model = torch.hub.load("gmberton/MegaLoc", "get_trained_model", trust_repo=True)
+        self.model = self.model.to(self.device).eval()
+        self._mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        self._std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+    def embed_images(self, paths: list[str | Path]) -> np.ndarray:
+        from PIL import Image
+
+        torch = self._torch
+        size = (MEGALOC_SIZE, MEGALOC_SIZE)
+        batch = np.stack([np.asarray(Image.open(p).convert("RGB").resize(size, Image.BILINEAR), dtype=np.float32) / 255.0
+                          for p in paths])
+        x = (torch.from_numpy(batch).permute(0, 3, 1, 2) - self._mean) / self._std
+        with torch.inference_mode():
+            feats = self.model(x.to(self.device))
+        return _normalize(feats.float().cpu().numpy())
+
+
 def make_embedder(model_name: str = DEFAULT_MODEL):
     """The embedder an index was built with, from the model id stored in it."""
     if model_name.startswith("eigenplaces/"):
         return PlaceEmbedder(model_name)
+    if model_name.startswith(MEGALOC):
+        return MegaLocEmbedder(model_name)
     return ClipEmbedder(model_name)

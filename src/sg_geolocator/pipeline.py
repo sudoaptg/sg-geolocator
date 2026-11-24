@@ -93,7 +93,7 @@ class Geolocator:
         if landmark and landmark.confidence >= LANDMARK_THRESHOLD:
             return landmark
         if self._places is not None:
-            place_emb = self._place_embedder.embed_images([path])[0]
+            place_emb = self._places.project(self._place_embedder.embed_images([path]))[0]
             match = self._places.predict(place_emb, k=PLACE_K, method="cluster", radius_km=PLACE_RADIUS_KM)
             if match.confidence >= PLACE_THRESHOLD:
                 match.source = "place-match"

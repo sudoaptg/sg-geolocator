@@ -81,3 +81,34 @@ def test_hub_repos_are_pre_trusted_once(tmp_path):
     _trust_hub_repos(fake_torch, ["gmberton_eigenplaces", "gmberton_cosplace"])
     _trust_hub_repos(fake_torch, ["gmberton_cosplace"])
     assert (tmp_path / "hub" / "trusted_list").read_text().split() == ["gmberton_eigenplaces", "gmberton_cosplace"]
+
+
+def test_pca_merge_keeps_neighbours_and_projects_queries(tmp_path):
+    from sg_geolocator.retrieval import RetrievalIndex
+
+    # 300 places in 64-d whose variation lives in 8 directions; two shards.
+    rng = np.random.default_rng(1)
+    basis = np.linalg.qr(rng.normal(size=(64, 8)))[0]
+    place = rng.normal(size=(300, 8)) @ basis.T + 0.3
+    emb = place / np.linalg.norm(place, axis=1, keepdims=True)
+    coords = np.column_stack([np.linspace(1.25, 1.45, 300), np.full(300, 103.8)])
+    parts = []
+    for i, sl in enumerate((slice(0, 150), slice(150, 300))):
+        p = tmp_path / f"part{i}.npz"
+        np.savez(p, embeddings=emb[sl].astype(np.float16), coords=coords[sl], sequences=np.array(["s"] * 150),
+                 paths=np.array(["x"] * 150), model=np.asarray("megaloc"), offset=np.asarray(i))
+        parts.append(p)
+    assert merge_indexes(parts, tmp_path / "m.npz", pca_dims=8, log=lambda *_: None) == 300
+    idx = RetrievalIndex(tmp_path / "m.npz")
+    assert idx.embeddings.shape == (300, 8) and idx.pca is not None
+    query = emb[123] + rng.normal(scale=0.01, size=64)  # a new photo of place 123, full-size descriptor
+    q = idx.project(query / np.linalg.norm(query))
+    assert q.shape == (8,) and abs(np.linalg.norm(q) - 1) < 1e-5
+    assert int(np.argmax(idx.embeddings @ q)) == 123
+
+
+def test_megaloc_is_picked_by_name(monkeypatch):
+    import sg_geolocator.embedder as E
+
+    monkeypatch.setattr(E.MegaLocEmbedder, "__init__", lambda self, name=E.MEGALOC: setattr(self, "model_name", name))
+    assert isinstance(E.make_embedder("megaloc"), E.MegaLocEmbedder)

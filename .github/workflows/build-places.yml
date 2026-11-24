@@ -1,8 +1,9 @@
 name: Build place index (exact-spot matching)
 
 # Dense visual place recognition index: hundreds of thousands of Mapillary photos, every
-# ~17 m, embedded with EigenPlaces. Each shard searches, downloads, embeds and deletes its
-# own share of the map, so only descriptors are kept. Needs the MAPILLARY_TOKEN secret.
+# ~17 m, embedded with EigenPlaces or MegaLoc. Each shard searches, downloads, embeds and
+# deletes its own share of the map, so only descriptors are kept (MegaLoc's 8448-d ones are
+# shrunk with PCA when the shards are merged). Needs the MAPILLARY_TOKEN secret.
 on:
   workflow_dispatch:
     inputs:
@@ -18,13 +19,19 @@ on:
       per_subcell:
         description: "Photos kept per grid square, from different capture sessions"
         default: "2"
+      model:
+        description: "Place model: eigenplaces/ResNet50/512 or megaloc"
+        default: "eigenplaces/ResNet50/512"
+      pca:
+        description: "Shrink descriptors to this many dims when merging (e.g. 1024 for megaloc; empty = keep)"
+        default: ""
 
 permissions:
   contents: write
 
 env:
   PYTHONUNBUFFERED: "1"
-  MODEL: eigenplaces/ResNet50/512
+  MODEL: ${{ inputs.model }}
 
 jobs:
   plan:
@@ -94,7 +101,7 @@ jobs:
           pattern: places-part-*
           merge-multiple: true
       - name: Merge shards
-        run: sg-geolocate merge-index part-*.npz --out places.npz && ls -lh places.npz
+        run: sg-geolocate merge-index part-*.npz --out places.npz ${{ inputs.pca && format('--pca {0}', inputs.pca) || '' }} && ls -lh places.npz
       - name: Evaluate (held-out capture sessions, 100 m agreement radius)
         run: |
           sg-geolocate evaluate places.npz --radius 0.1 --max-test 3000 --no-geocell --json-out eval.json --md-out eval.md
@@ -104,14 +111,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="places-eigenplaces-$(date -u +%Y%m%d-%H%M)"
+          tag="places-${MODEL%%/*}-$(date -u +%Y%m%d-%H%M)"
           {
             echo "Dense place-recognition index (\`$MODEL\`) for exact-spot matching. Use with"
             echo "\`sg-geolocate predict photo.jpg --index index.npz --geocell geocell.npz --places places.npz\`."
             echo
             cat eval.md
             echo
-            echo "Settings: subcell=${{ inputs.subcell }}, per_subcell=${{ inputs.per_subcell }}"
+            echo "Settings: subcell=${{ inputs.subcell }}, per_subcell=${{ inputs.per_subcell }}, pca=${{ inputs.pca || 'none' }}"
             echo
             echo "Reference imagery © Mapillary contributors, CC BY-SA 4.0. Only descriptors and image IDs are published."
           } > notes.md

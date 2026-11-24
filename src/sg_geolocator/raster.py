@@ -22,8 +22,12 @@ _SAMPLES = np.concatenate([np.arange(2, 60, 2.0), np.arange(60, 300, 5.0), np.ar
 
 
 def default_height(tags: dict, area_m2: float) -> float:
-    """Roof height when the map gives none: tagged levels/height, else by footprint size
-    (a landed house, a shophouse row or small block, a bigger building)."""
+    """Roof height of a plan-map building: HDB's own storey count (enrich.apply_hdb), else
+    the map's tagged height/levels, else a satellite estimate (enrich.apply_heights), else
+    a guess by type and footprint size (a landed house, a shophouse row or small block, a
+    bigger building)."""
+    if tags.get("height_hdb"):
+        return float(tags["height_hdb"])
     try:  # a tagged "0" means unknown, not flat
         if tags.get("height") and float(str(tags["height"]).replace("m", "").strip()) > 0:
             return float(str(tags["height"]).replace("m", "").strip())
@@ -31,6 +35,8 @@ def default_height(tags: dict, area_m2: float) -> float:
             return float(tags["building:levels"]) * 3.0
     except ValueError:
         pass
+    if tags.get("height_est"):
+        return float(tags["height_est"])
     if tags.get("building") in ("apartments", "residential") and area_m2 >= 300:
         return CONDO_M  # an unmapped flat block: most newer condos are about 20 storeys
     return 9.0 if area_m2 < 300 else 12.0 if area_m2 < 1500 else 15.0
@@ -94,7 +100,7 @@ class PlanRaster:
             if not poly or len(poly) < 3:
                 continue
             label = f"blk {item.get('addr:housenumber', '')} {item.get('addr:street', '')}".lower().strip()
-            h = known.get(label) or default_height(item, _area(xy))
+            h = item.get("height_hdb") or known.get(label) or default_height(item, _area(xy))
             dk.polygon(poly, fill=BUILDING)
             dh.polygon(poly, fill=float(h))
         self.kind = np.asarray(kind)[::-1].T.copy()  # [x index, y index] with y increasing north
@@ -298,7 +304,7 @@ def building_heights(plan_part: dict, buildings=None) -> list[float]:
     for item in plan_part.get("buildings", []):
         label = f"blk {item.get('addr:housenumber', '')} {item.get('addr:street', '')}".lower().strip()
         xy = to_xy(*np.asarray(item["pts"], float).T)
-        out.append(known.get(label) or default_height(item, _area(xy)))
+        out.append(item.get("height_hdb") or known.get(label) or default_height(item, _area(xy)))
     return out
 
 

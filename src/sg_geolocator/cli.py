@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     mg = sub.add_parser("merge-index", help="Join shard indexes from build-index --shard")
     mg.add_argument("parts", nargs="+")
     mg.add_argument("--out", default="index.npz")
+    mg.add_argument("--pca", type=int, help="Shrink descriptors to this many principal components (e.g. 1024 for MegaLoc)")
 
     g = sub.add_parser("train-geocell", help="Train the area classifier on all photos of an index")
     g.add_argument("index")
@@ -186,6 +187,16 @@ def main(argv: list[str] | None = None) -> int:
     bt = sub.add_parser("build-transit", help="Bus routes, MRT/LRT tracks and stations from the OSM extract")
     bt.add_argument("--out", default="transit.json.gz")
 
+    ep = sub.add_parser("enrich-plan", help="Add HDB block data and outside height estimates to a plan map")
+    ep.add_argument("--plan", required=True, help="export-area file (e.g. the island-wide sgplan)")
+    ep.add_argument("--hdb-blocks", help="HDB Existing Building GeoJSON(.gz) from data.gov.sg")
+    ep.add_argument("--hdb-property", help="HDB Property Information CSV(.gz) from data.gov.sg")
+    ep.add_argument("--heights", action="append", default=[],
+                    help="NAME=FILE: [[ring], height] rows (e.g. gba=gba_sg.json.gz); repeatable, first wins")
+    ep.add_argument("--add-missing", action="store_true", help="Also add --heights outlines the map lacks (300 m2+)")
+    ep.add_argument("--out", required=True)
+    ep.add_argument("--buildings-out", help="Also write a buildings .npz (footprints with known/estimated heights)")
+
     bb = sub.add_parser("build-buildings", help="Building footprints with heights, for skyline matching")
     bb.add_argument("--out", default="buildings.npz")
 
@@ -258,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "merge-index":
         from .retrieval import merge_indexes
 
-        print(f"Merged {merge_indexes(args.parts, args.out)} photos -> {args.out}")
+        print(f"Merged {merge_indexes(args.parts, args.out, pca_dims=args.pca)} photos -> {args.out}")
         return 0
 
     if args.cmd == "train-geocell":
@@ -594,6 +605,34 @@ def main(argv: list[str] | None = None) -> int:
                         f.write(chunk)
         transit.save(transit.extract(pbf), args.out)
         print(f"transit -> {args.out}")
+        return 0
+
+    if args.cmd == "enrich-plan":
+        import gzip
+
+        from . import enrich
+
+        with gzip.open(args.plan, "rt") as fh:
+            plan = json.load(fh)
+        grid = enrich.IdGrid(plan["buildings"])
+        if args.hdb_blocks:
+            rows = enrich.load_hdb_property(args.hdb_property) if args.hdb_property else []
+            enrich.apply_hdb(plan, enrich.load_hdb_blocks(args.hdb_blocks), rows, grid=grid)
+            grid = enrich.IdGrid(plan["buildings"])  # added blocks
+        for spec in args.heights:
+            name, path = spec.split("=", 1)
+            polys = enrich.load_height_polys(path)
+            enrich.apply_heights(plan, polys, name, grid=grid)
+            if args.add_missing:
+                enrich.add_missing(plan, [(r, {"height_est": round(h, 1), "height_src": name}) for r, h in polys], name,
+                                   grid=grid)
+                grid = enrich.IdGrid(plan["buildings"])
+        with gzip.open(args.out, "wt") as fh:
+            json.dump(plan, fh)
+        print(f"{len(plan['buildings'])} buildings -> {args.out}")
+        if args.buildings_out:
+            enrich.buildings_from_plan(plan).save(args.buildings_out)
+            print(f"buildings -> {args.buildings_out}")
         return 0
 
     if args.cmd == "build-buildings":

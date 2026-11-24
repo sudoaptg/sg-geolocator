@@ -79,19 +79,60 @@ def save_index(paths, coords, sequences, embedder, out, batch_size=32, log=None,
     return len(paths)
 
 
-def merge_indexes(parts: list[str | Path], out: str | Path) -> int:
-    """Join shard indexes (from build_index_from_csv with `shard`) in their original order."""
+def merge_indexes(parts: list[str | Path], out: str | Path, pca_dims: int | None = None,
+                  pca_sample: int = 50_000, log=print) -> int:
+    """Join shard indexes (from build_index_from_csv with `shard`) in their original order.
+
+    With `pca_dims`, descriptors are also shrunk to their top principal components (fitted on
+    a random sample of all shards) and re-normalised; the projection is stored in the index
+    so queries are projected the same way (RetrievalIndex.project)."""
     loaded = sorted((np.load(p) for p in parts), key=lambda d: int(d["offset"]))
     models = {str(d["model"]) for d in loaded}
     if len(models) != 1:
         raise ValueError(f"Shards were built with different models: {models}")
+    extra = {}
+    if pca_dims:
+        mean, comps, kept = fit_pca([d["embeddings"] for d in loaded], pca_dims, pca_sample)
+        log(f"  PCA {comps.shape[0]} -> {pca_dims} dims keeps {kept:.1%} of the variance")
+        emb = np.concatenate([project(d["embeddings"], mean, comps).astype(np.float16) for d in loaded])
+        extra = {"pca_mean": mean.astype(np.float32), "pca_components": comps.astype(np.float32)}
+    else:
+        emb = np.concatenate([d["embeddings"] for d in loaded])
     np.savez(
         out,
-        **{k: np.concatenate([d[k] for d in loaded]) for k in ("embeddings", "coords", "sequences", "paths")},
+        embeddings=emb,
+        **{k: np.concatenate([d[k] for d in loaded]) for k in ("coords", "sequences", "paths")},
         model=np.asarray(models.pop()),
         offset=np.asarray(0),
+        **extra,
     )
     return sum(len(d["coords"]) for d in loaded)
+
+
+def fit_pca(chunks, dims: int, sample: int = 50_000, seed: int = 0):
+    """(mean, components [D x dims], share of variance kept) from a random sample of rows."""
+    rng = np.random.default_rng(seed)
+    total = sum(len(c) for c in chunks)
+    rows = []
+    for c in chunks:
+        n = min(len(c), max(1, round(sample * len(c) / total)))
+        rows.append(np.asarray(c[rng.choice(len(c), n, replace=False)], dtype=np.float32))
+    x = np.concatenate(rows)
+    mean = x.mean(0)
+    x -= mean
+    cov = (x.T @ x) / len(x)
+    w, v = np.linalg.eigh(cov)
+    order = np.argsort(w)[::-1][:dims]
+    return mean, v[:, order], float(w[order].sum() / max(w.sum(), 1e-12))
+
+
+def project(x, mean, comps, chunk: int = 20_000) -> np.ndarray:
+    """Centre, project and re-normalise rows (in chunks, so float16 inputs stay small)."""
+    out = []
+    for i in range(0, len(x), chunk):
+        y = (np.asarray(x[i: i + chunk], dtype=np.float32) - mean) @ comps
+        out.append(y / np.maximum(np.linalg.norm(y, axis=1, keepdims=True), 1e-12))
+    return np.concatenate(out) if out else np.zeros((0, comps.shape[1]), np.float32)
 
 
 def _approx_km(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -103,13 +144,24 @@ def _approx_km(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 class RetrievalIndex:
     def __init__(self, path: str | Path | None = None, embeddings=None, coords=None, model: str = DEFAULT_MODEL):
         self.model = model
+        self.pca = None
         if path is not None:
             data = np.load(path)
             embeddings, coords = data["embeddings"], data["coords"]
             # Indexes built before the model was recorded used the default model.
             self.model = str(data["model"]) if "model" in data else DEFAULT_MODEL
+            if "pca_components" in data:
+                self.pca = (data["pca_mean"], data["pca_components"])
         self.embeddings = np.asarray(embeddings, dtype=np.float32)  # dense indexes are stored as float16
         self.coords = np.asarray(coords)
+
+    def project(self, emb: np.ndarray) -> np.ndarray:
+        """A query descriptor (or rows of them) in the index's own space: the stored PCA
+        projection when the index has one, else unchanged."""
+        if self.pca is None:
+            return emb
+        emb = np.asarray(emb, dtype=np.float32)
+        return project(emb.reshape(-1, emb.shape[-1]), *self.pca).reshape(*emb.shape[:-1], -1)
 
     def predict(
         self,
