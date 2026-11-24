@@ -1,0 +1,55 @@
+{
+ "results": [
+  {
+   "name": "photo1-orchard-havelock",
+   "unscored": true,
+   "seconds": 10,
+   "top": [],
+   "error": "AttributeError: 'RapidOCR' object has no attribute 'text_recognizer'"
+  },
+  {
+   "name": "photo2-buona-vista",
+   "unscored": true,
+   "seconds": 7,
+   "top": [],
+   "error": "AttributeError: 'RapidOCR' object has no attribute 'text_recognizer'"
+  },
+  {
+   "name": "photo2-jurong-east",
+   "unscored": true,
+   "seconds": 7,
+   "top": [],
+   "error": "AttributeError: 'RapidOCR' object has no attribute 'text_recognizer'"
+  },
+  {
+   "name": "photo3-bukit-merah",
+   "unscored": true,
+   "seconds": 7,
+   "top": [],
+   "error": "AttributeError: 'RapidOCR' object has no attribute 'text_recognizer'"
+  },
+  {
+   "name": "photo3-whampoa",
+   "unscored": true,
+   "seconds": 7,
+   "top": [],
+   "error": "AttributeError: 'RapidOCR' object has no attribute 'text_recognizer'"
+  },
+  {
+   "name": "photo5-lower-delta",
+   "unscored": true,
+   "seconds": 6,
+   "top": [],
+   "error": "AttributeError: 'RapidOCR' object has no attribute 'text_recognizer'"
+  },
+  {
+   "name": "photo7-auto",
+   "unscored": true,
+   "seconds": 7,
+   "top": [],
+   "error": "AttributeError: 'RapidOCR' object has no attribute 'text_recognizer'"
+  }
+ ],
+ "solved": 0,
+ "total": 0
+}

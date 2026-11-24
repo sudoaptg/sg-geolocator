@@ -1,0 +1,44 @@
+{
+ "results": [
+  {
+   "name": "lau-pa-sat",
+   "error_m": 164.7,
+   "solved": true,
+   "rank_of_first_correct": 1,
+   "seconds": 14,
+   "heading_error": 37.2
+  },
+  {
+   "name": "bishan-221",
+   "error_m": null,
+   "solved": false,
+   "rank_of_first_correct": null,
+   "seconds": 9,
+   "error": "AttributeError: 'RapidOCR' object has no attribute 'text_recognizer'"
+  },
+  {
+   "name": "pasir-ris-588c",
+   "error_m": 123.7,
+   "solved": true,
+   "rank_of_first_correct": 1,
+   "seconds": 88,
+   "heading_error": 16.0
+  },
+  {
+   "name": "jurong-east-204",
+   "error_m": 0.4,
+   "solved": true,
+   "rank_of_first_correct": 1,
+   "seconds": 8
+  },
+  {
+   "name": "sengkang-riverside",
+   "error_m": 6106.3,
+   "solved": false,
+   "rank_of_first_correct": null,
+   "seconds": 223
+  }
+ ],
+ "solved": 3,
+ "total": 5
+}
