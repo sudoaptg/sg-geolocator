@@ -1,0 +1,40 @@
+name: Probe data sources
+
+# Looks at outside data from a runner with open internet: HDB block outlines and property
+# data (data.gov.sg, Singapore Open Data Licence), open building-height datasets, PP-OCRv5/v6
+# text reading and the MegaLoc place model. Raw files go to a "sources-..." release.
+on:
+  workflow_dispatch:
+    inputs:
+      parts:
+        description: "Which of: hdb heights ocr megaloc"
+        default: "hdb heights ocr megaloc"
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install requests numpy pillow rapidocr onnxruntime huggingface_hub safetensors
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: python scripts/probe_sources.py ${{ inputs.parts }}
+      - name: Publish raw files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -lh out || true
+          if [ -n "$(ls -A out 2>/dev/null)" ]; then
+            tag="sources-$(date -u +%Y%m%d-%H%M)"
+            gh release create "$tag" out/* --repo "${{ github.repository }}" --title "$tag" \
+              --notes "Raw copies: HDB Existing Building and HDB Property Information from data.gov.sg (Singapore Open Data Licence v1.0)."
+          fi
