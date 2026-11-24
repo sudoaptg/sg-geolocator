@@ -25,7 +25,11 @@ The pipeline runs these stages and returns the most confident answer:
    Mapillary capture sessions (190k-photo index) that happens for ~19% of photos, and those
    answers are within 50 m 88% of the time and within 1 km 95% of the time; other photos
    fall back to the area guess. Built by the **Build place index** workflow (20 parallel
-   jobs; only descriptors are kept). The **Add Commons photos** workflow adds geotagged
+   jobs; only descriptors are kept). With `model: megaloc` the workflow builds the same
+   index with [MegaLoc](https://github.com/gmberton/MegaLoc) (DINOv2-based, trained on
+   several place-recognition datasets at once; 8448-d descriptors shrunk to 1024 with PCA
+   when the shards are merged). The locate workflows use the EigenPlaces index unless told
+   otherwise (`places` input). The **Add Commons photos** workflow adds geotagged
    [Wikimedia Commons](https://commons.wikimedia.org/) photos (schools, MRT stations,
    views from flats), which are taken from viewpoints the car-based Mapillary photos miss.
 4. **Landmark recognition (zero-shot):** a CLIP model scores the image against text prompts for
@@ -108,7 +112,37 @@ island, then ranks those places by render-and-compare from 60-150 m up.
 
 `sg-geolocate benchmark benchmarks/cases.json --images DIR --buildings ...` runs every
 confirmed case and reports the error in metres and degrees, so changes are judged on
-numbers rather than one example.
+numbers rather than one example. Cases without a confirmed answer (`benchmarks/hinted.json`:
+photos with only an area hint) are run and reported, not scored.
+
+### Block numbers, including stacked ones
+
+`--auto` reads the photo first. A block number painted on a facade (`204`) pins the search
+to the twenty or so blocks with that number island-wide, ranked by the plan-view match.
+Numbers painted down a column, one digit above another (`2/2/1`), are missed by line-based
+text readers, and reading the column as one rotated line drops repeated digits (`221` comes
+out as `21`). So character-sized regions (MSER) are grouped into columns, each column's
+characters are laid side by side on a clean strip with gaps, and the strip is read; a
+misread last character that is really a block letter (`5968` for `596B`) is checked
+against the HDB block list. Two stacked numbers on blocks of the same street (`596D`,
+`596B`) confirm each other. This takes about a second per photo.
+
+### Map data: HDB blocks and building heights
+
+`enrich-plan` (workflow **Enrich plan map**) adds to the island-wide plan map:
+
+- **HDB Existing Building** (data.gov.sg): all ~13,500 HDB block outlines with block
+  numbers. Matched to the OpenStreetMap outlines; street codes are turned into street names
+  by the blocks whose OSM address agrees; blocks missing from OSM are added.
+- **HDB Property Information** (data.gov.sg): storeys and completion year of every block,
+  so HDB heights are storeys x 3 m + 3 m of roof structures.
+- **Building heights from GlobalBuildingAtlas** (Zhu et al., ESSD 2025; CC BY-NC 4.0, so
+  non-commercial use only): a satellite-derived height for each outline, used for the
+  condos, offices and malls that OSM has no height for (20-40% of block-sized buildings
+  in central estates).
+
+Heights are taken in that order: HDB storeys, then the map's own height or levels, then the
+satellite estimate, then a guess by building type and size.
 
 ## Try it on your own photos (on GitHub)
 

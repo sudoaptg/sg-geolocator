@@ -41,6 +41,20 @@ jobs:
     steps:
       - id: s
         run: python3 -c "print('list=' + str(list(range(int('${{ inputs.shards }}')))))" >> "$GITHUB_OUTPUT"
+      - name: Download Singapore boundary (once, for every shard)
+        run: |
+          for i in 1 2 3 4 5 6; do
+            url=$(curl -fsSL --retry 3 --retry-all-errors --retry-delay 10 https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
+                  | python3 -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])") \
+              && curl -fsSL --retry 3 --retry-all-errors --retry-delay 10 "$url" -o sg_boundary.geojson && break
+            sleep $((i * 30))
+          done
+          test -s sg_boundary.geojson
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sg-boundary
+          path: sg_boundary.geojson
+          retention-days: 3
 
   shard:
     needs: plan
@@ -64,11 +78,9 @@ jobs:
         with:
           path: ~/.cache/torch
           key: torch-hub-${{ env.MODEL }}
-      - name: Download Singapore boundary
-        run: |
-          url=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://www.geoboundaries.org/api/current/gbOpen/SGP/ADM0/ \
-                | python -c "import json,sys; print(json.load(sys.stdin)['simplifiedGeometryGeoJSON'])")
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 "$url" -o sg_boundary.geojson
+      - uses: actions/download-artifact@v4
+        with:
+          name: sg-boundary
       - name: Build shard ${{ matrix.shard }} of ${{ inputs.shards }}
         env:
           MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
@@ -87,6 +99,7 @@ jobs:
 
   finalize:
     needs: shard
+    if: ${{ !cancelled() }}  # merge what finished; the release notes say how many shards made it
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +114,11 @@ jobs:
           pattern: places-part-*
           merge-multiple: true
       - name: Merge shards
-        run: sg-geolocate merge-index part-*.npz --out places.npz ${{ inputs.pca && format('--pca {0}', inputs.pca) || '' }} && ls -lh places.npz
+        run: |
+          n=$(ls part-*.npz | wc -l)
+          echo "SHARDS_MERGED=$n of ${{ inputs.shards }}" >> "$GITHUB_ENV"
+          if [ "$n" -lt "${{ inputs.shards }}" ]; then echo "::warning::only $n of ${{ inputs.shards }} shards finished"; fi
+          sg-geolocate merge-index part-*.npz --out places.npz ${{ inputs.pca && format('--pca {0}', inputs.pca) || '' }} && ls -lh places.npz
       - name: Evaluate (held-out capture sessions, 100 m agreement radius)
         run: |
           sg-geolocate evaluate places.npz --radius 0.1 --max-test 3000 --no-geocell --json-out eval.json --md-out eval.md
@@ -118,7 +135,7 @@ jobs:
             echo
             cat eval.md
             echo
-            echo "Settings: subcell=${{ inputs.subcell }}, per_subcell=${{ inputs.per_subcell }}, pca=${{ inputs.pca || 'none' }}"
+            echo "Settings: subcell=${{ inputs.subcell }}, per_subcell=${{ inputs.per_subcell }}, pca=${{ inputs.pca || 'none' }}; shards merged: $SHARDS_MERGED"
             echo
             echo "Reference imagery © Mapillary contributors, CC BY-SA 4.0. Only descriptors and image IDs are published."
           } > notes.md

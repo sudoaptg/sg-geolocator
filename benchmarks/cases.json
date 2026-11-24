@@ -24,8 +24,7 @@
    "name": "bishan-221",
    "image": "bishan-221.webp",
    "args": [
-    "--block",
-    "221=825",
+    "--auto",
     "--on-water",
     "--render",
     "--radius",
@@ -36,7 +35,7 @@
     "lon": 103.84899
    },
    "tolerance_m": 200,
-   "source": "monitor lizard in the Kallang River, Bishan-Ang Mo Kio Park, Blk 221 Bishan St 23 behind (confirmed by the user)"
+   "source": "monitor lizard in the Kallang River, Bishan-Ang Mo Kio Park, Blk 221 Bishan St 23 behind (confirmed by the user) The block number is read from the photo (stacked digits) by --auto."
   },
   {
    "name": "pasir-ris-588c",

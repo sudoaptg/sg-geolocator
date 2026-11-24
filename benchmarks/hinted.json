@@ -1,17 +1,95 @@
 {
  "note": "The first test photos (benchmarks/initial) with the owner's area hints but no confirmed answer: each run reports where the search points inside the hinted area, unscored. Two hints for one photo are run as two cases so their scores can be compared.",
  "cases": [
-  {"name": "photo1-orchard-havelock", "image": "photo1.jpg", "hint": "condos + flyover; Orchard / Havelock / Great World",
-   "args": ["--near", "1.2912,103.8325", "--radius", "900", "--render", "--auto"]},
-  {"name": "photo2-buona-vista", "image": "photo2.webp", "hint": "MRT lines; Buona Vista or Jurong East",
-   "args": ["--near", "1.3073,103.7903", "--radius", "500", "--render", "--auto", "--transit", "TRANSIT"]},
-  {"name": "photo2-jurong-east", "image": "photo2.webp", "hint": "MRT lines; Buona Vista or Jurong East",
-   "args": ["--near", "1.3332,103.7422", "--radius", "500", "--render", "--auto", "--transit", "TRANSIT"]},
-  {"name": "photo3-bukit-merah", "image": "photo3.webp", "hint": "older HDB, PCF kindergarten; Bukit Merah / Whampoa",
-   "args": ["--near", "1.2847,103.8172", "--radius", "800", "--render", "--auto"]},
-  {"name": "photo3-whampoa", "image": "photo3.webp", "hint": "older HDB, PCF kindergarten; Bukit Merah / Whampoa",
-   "args": ["--near", "1.3226,103.8543", "--radius", "800", "--render", "--auto"]},
-  {"name": "photo5-lower-delta", "image": "photo5.webp", "hint": "high-floor window; Lower Delta / Kim Tian",
-   "args": ["--near", "1.2840,103.8290", "--radius", "600", "--render", "--auto"]}
+  {
+   "name": "photo1-orchard-havelock",
+   "image": "photo1.jpg",
+   "hint": "condos + flyover; Orchard / Havelock / Great World",
+   "args": [
+    "--near",
+    "1.2912,103.8325",
+    "--radius",
+    "900",
+    "--render",
+    "--auto"
+   ]
+  },
+  {
+   "name": "photo2-buona-vista",
+   "image": "photo2.webp",
+   "hint": "MRT lines; Buona Vista or Jurong East",
+   "args": [
+    "--near",
+    "1.3073,103.7903",
+    "--radius",
+    "500",
+    "--render",
+    "--auto",
+    "--transit",
+    "TRANSIT"
+   ]
+  },
+  {
+   "name": "photo2-jurong-east",
+   "image": "photo2.webp",
+   "hint": "MRT lines; Buona Vista or Jurong East",
+   "args": [
+    "--near",
+    "1.3332,103.7422",
+    "--radius",
+    "500",
+    "--render",
+    "--auto",
+    "--transit",
+    "TRANSIT"
+   ]
+  },
+  {
+   "name": "photo3-bukit-merah",
+   "image": "photo3.webp",
+   "hint": "older HDB, PCF kindergarten; Bukit Merah / Whampoa",
+   "args": [
+    "--near",
+    "1.2847,103.8172",
+    "--radius",
+    "800",
+    "--render",
+    "--auto"
+   ]
+  },
+  {
+   "name": "photo3-whampoa",
+   "image": "photo3.webp",
+   "hint": "older HDB, PCF kindergarten; Bukit Merah / Whampoa",
+   "args": [
+    "--near",
+    "1.3226,103.8543",
+    "--radius",
+    "800",
+    "--render",
+    "--auto"
+   ]
+  },
+  {
+   "name": "photo5-lower-delta",
+   "image": "photo5.webp",
+   "hint": "high-floor window; Lower Delta / Kim Tian",
+   "args": [
+    "--near",
+    "1.2840,103.8290",
+    "--radius",
+    "600",
+    "--render",
+    "--auto"
+   ]
+  },
+  {
+   "name": "photo7-auto",
+   "image": "photo7.webp",
+   "hint": "none: two stacked block numbers on the facades",
+   "args": [
+    "--auto"
+   ]
+  }
  ]
 }
