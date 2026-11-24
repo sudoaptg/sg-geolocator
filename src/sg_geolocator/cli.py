@@ -463,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
             names = PlaceNames.load(args.names)
         width = Image.open(args.image).width
         if args.auto:
-            _auto_hints(args, b)
+            _auto_hints(args, b, names)
         landmarks = [_parse_landmark(t, b, names, width) for t in args.landmark]
         if args.block and (args.elevated_tracks or args.elevated_lines):  # fast filter before anything else
             from . import transit as transit_mod
@@ -732,8 +732,8 @@ def _refine_with_resect(img, pred, args) -> list:
     return json.loads(lines[-1]).get("spots", []) if lines else []
 
 
-def _auto_hints(args, b):
-    """Fill in --block / rail filter / --anywhere-water from what the photo shows."""
+def _auto_hints(args, b, names=None):
+    """Fill in --block / --landmark / rail filter / --anywhere-water from what the photo shows."""
     import re
 
     from . import plan2d, raster, scene
@@ -744,8 +744,8 @@ def _auto_hints(args, b):
     shares = seg.class_shares(args.image)
     comp = raster.composition(labels)
     found = []
+    texts = TextReader().read_positions(args.image) if not args.block or (names and not args.landmark) else {}
     if not args.block:
-        texts = TextReader().read_positions(args.image)
         # A lone digit is too often a misread (a window frame, a sign fragment) to pin a block on.
         nums = [(t.strip().upper(), xy) for t, xy in texts.items()
                 if re.fullmatch(r"\d{2,4}[A-Z]?|\d[A-Z]", t.strip().upper())]
@@ -770,6 +770,16 @@ def _auto_hints(args, b):
             t, (x, _) = max(nums, key=lambda n: len(n[0]))
             args.block = f"{t}={x:.4f}"
             found.append(f"block number {t} at {x:.0%} across")
+    if names is not None and not args.block and not args.landmark:
+        # A sign naming a place (a mall, a school, 珍珠坊 on People's Park Complex) fixes which way
+        # the camera faced: use the place as a landmark at the sign's column.
+        signs = [(len(t), t, x, hits[0]) for t, (x, _) in texts.items() if len((hits := names.match(t))) == 1]
+        if signs:
+            _, t, x, (name, lat, lon, _) = max(signs)
+            args.landmark.append(f"{lat:.6f},{lon:.6f}={x:.4f}")
+            if not args.near:
+                args.near, args.radius = f"{lat:.6f},{lon:.6f}", max(args.radius, 500.0)
+            found.append(f"sign '{t}' = {name} at {x:.0%} across")
     if scene.rail_in_view(shares) and args.block and not args.elevated_tracks and args.transit:
         args.elevated_tracks = scene.tracks_in_view(shares)
         found.append(f"elevated rail in view ({scene.rail_share(shares):.0%} of the photo: {args.elevated_tracks}+ tracks)")
