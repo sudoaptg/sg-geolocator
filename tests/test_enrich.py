@@ -53,9 +53,11 @@ def test_buildings_from_plan_keeps_known_heights_only():
     plan["buildings"][0]["height_hdb"] = 39.0
     plan["buildings"][2]["height_est"] = 95.0
     b = E.buildings_from_plan(plan, log=lambda *_: None)
-    assert len(b.labels) == 3  # the unaddressed block with no height is left out
+    assert len(b.labels) == 2  # known heights only: the HDB block and the tagged 4 levels
     assert b.labels[0] == "Blk 221 Bishan Street 23"
-    assert sorted({float(h) for h in b.heights}) == [12.0, 39.0, 95.0]
+    assert sorted({float(h) for h in b.heights}) == [12.0, 39.0]
+    b = E.buildings_from_plan(plan, estimates=True, log=lambda *_: None)
+    assert len(b.labels) == 3 and sorted({float(h) for h in b.heights}) == [12.0, 39.0, 95.0]
 
 
 def test_height_table_corrects_biased_estimates():

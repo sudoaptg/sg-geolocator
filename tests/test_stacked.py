@@ -37,3 +37,12 @@ def test_stacked_numbers_reads_with_lookalike_fix(tmp_path):
     assert block_number_variants("5968") == ["5968", "596B"]
     assert block_number_variants("221") == ["221"]
     assert block_number_variants("A1") == []
+
+
+def test_line_recognizer_across_rapidocr_versions():
+    from types import SimpleNamespace
+
+    from sg_geolocator.clues import line_recognizer
+
+    new, old = SimpleNamespace(text_rec="rec13"), SimpleNamespace(text_recognizer="rec12")
+    assert line_recognizer(new) == "rec13" and line_recognizer(old) == "rec12"

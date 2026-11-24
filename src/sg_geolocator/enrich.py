@@ -327,16 +327,20 @@ def load_height_polys(path) -> list[tuple[np.ndarray, float]]:
     return [(np.asarray(r[0], float), float(r[1])) for r in rows if r[1] is not None and float(r[1]) > 0]
 
 
-def buildings_from_plan(plan: dict, log=print):
+def buildings_from_plan(plan: dict, estimates: bool = False, log=print):
     """A Buildings file (footprint points + roof height + address label) from an enriched
-    plan: every building whose height is known or estimated (HDB storeys, OSM tags, satellite
-    estimate), not the ones that would only get a guess by type and size."""
+    plan: every building whose height is known (HDB storeys, OSM tags), plus with
+    `estimates` those with only a satellite estimate. The plan-view stage keeps them out by
+    default: it decides from a sharp "taller than 20 m?" which outlines show against the
+    sky, and the estimates miss most for exactly the towers that matter (Hong Leong
+    Building, ~190 m, comes out at 21 m); on the benchmark they moved Lau Pa Sat from 50 m
+    to 165 m off. Render-and-compare, which averages over the whole picture, uses them."""
     from .raster import default_height
     from .skyline import Buildings, _densify
 
     pts, hs, ids, labels = [], [], [], []
     for it in plan["buildings"]:
-        if not (it.get("height_hdb") or has_height(it) or it.get("height_est")):
+        if not (it.get("height_hdb") or has_height(it) or (estimates and it.get("height_est"))):
             continue
         ring = np.asarray(it["pts"], float)
         if len(ring) < 3:

@@ -243,6 +243,14 @@ def block_number_variants(text: str) -> list[str]:
     return out
 
 
+def line_recognizer(engine):
+    """The text-line recogniser of a RapidOCR engine (`text_rec` from 1.3, `text_recognizer` before)."""
+    rec = getattr(engine, "text_rec", None) or getattr(engine, "text_recognizer", None)
+    if rec is None:
+        raise AttributeError("this RapidOCR version has no text-line recogniser")
+    return rec
+
+
 def stacked_numbers(path, recognizer=None, min_score: float = 0.5) -> list[tuple[str, float, float]]:
     """(text, score, x across the photo 0-1) for each column of stacked characters that
     reads as a block number, best first."""
@@ -258,12 +266,12 @@ def stacked_numbers(path, recognizer=None, min_score: float = 0.5) -> list[tuple
     if recognizer is None:
         from rapidocr_onnxruntime import RapidOCR
 
-        recognizer = RapidOCR().text_recognizer
+        recognizer = line_recognizer(RapidOCR())
     reads = recognizer([stack_strip(gray, s) for s in stacks])
     reads = reads[0] if isinstance(reads, tuple) else reads
     out = []
-    for stack, (text, score) in zip(stacks, reads):
-        text = str(text).replace(" ", "").upper()
+    for stack, res in zip(stacks, reads):
+        text, score = str(res[0]).replace(" ", "").upper(), res[1]
         # at least two different characters: a column of identical marks reads "11"/"111"
         if float(score) >= min_score and len(set(text)) >= 2 and block_number_variants(text):
             x = (stack[0][0] + stack[0][2] / 2) / rgb.shape[1]
