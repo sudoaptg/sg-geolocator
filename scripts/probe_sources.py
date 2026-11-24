@@ -103,80 +103,90 @@ def _tiles_for_sg(names):
 SG_TILE = "e100_n05_e105_n00"  # lon 100-105, lat 0-5
 
 
+def _download(url: str, path: Path) -> Path:
+    with requests.get(url, headers=UA, stream=True, timeout=600) as r:
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(1 << 22):
+                f.write(chunk)
+    say(f"  downloaded {url.split('/')[-1]}: {path.stat().st_size / 1e6:.0f} MB")
+    return path
+
+
+def _feature_id(feat: dict):
+    props = feat.get("properties") or {}
+    for k in ("id", "ID", "Id", "fid", "building_id", "osm_id", "source_id"):
+        if k in props:
+            return str(props[k])
+    return str(feat.get("id")) if feat.get("id") is not None else None
+
+
+def _sg_polygons(path: Path, label: str) -> dict:
+    """id -> (ring as [lat, lon] rows, source) for features inside Singapore's box."""
+    import ijson
+
+    out, n = {}, 0
+    with open(path, "rb") as f:
+        for feat in ijson.items(f, "features.item", use_float=True):
+            n += 1
+            if n <= 2:
+                say(f"    {label} feature: {json.dumps(feat)[:700]}")
+            rings = _rings(feat.get("geometry") or {})
+            if not rings:
+                continue
+            ring = rings[0]
+            x, y = ring[0][0], ring[0][1]
+            if not (SG[0] <= x <= SG[2] and SG[1] <= y <= SG[3]):
+                continue
+            fid = _feature_id(feat)
+            if fid is not None:
+                out[fid] = ([[round(p[1], 6), round(p[0], 6)] for p in ring], label)
+    say(f"  {label}: {n} features in the tile, {len(out)} in Singapore's box")
+    return out
+
+
 def gba():
-    """GlobalBuildingAtlas: find the tile holding Singapore, then keep the buildings in
-    Singapore with their heights (out/gba_sg.json.gz: [[ring lat/lon], height] rows)."""
-    for repo in ("vitrobot/GBA.LoD1", "zhu-xlab/GBA.LoD1", "zhu-xlab/GBA.ODbLPolygon"):
+    """GlobalBuildingAtlas: LoD1 heights (id -> height) joined with the outlines of the
+    Singapore tile (Part II polygons in vitrobot/GBA.LoD1, OSM-derived Part I in
+    zhu-xlab/GBA.ODbLPolygon). Writes out/gba_sg.json.gz: [[ring lat/lon], height, source] rows."""
+    import ijson
+
+    polys = {}
+    for repo in ("vitrobot/GBA.LoD1", "zhu-xlab/GBA.ODbLPolygon"):
         try:
             files = _hf_tree(repo)
         except Exception as exc:
             say(f"  HF {repo}: {exc}")
             continue
         names = {f["path"]: f.get("size") for f in files if f.get("type") == "file"}
-        tops = sorted({n.split("/")[0] + "/" + (n.split("/")[1] if n.count("/") > 1 else "") for n in names})
-        say(f"  HF {repo}: {len(names)} files in {tops[:30]}")
         hits = {n: sz for n, sz in names.items() if SG_TILE in n}
-        say(f"  Singapore tile: {hits}")
-        for n in [n for n in names if n.endswith("geojson") and "/" not in n]:
-            say(f"  index file: {n} ({names[n]} bytes)")
-        if repo.endswith("LoD1"):
-            for n in hits:
-                if n.endswith(".json"):
-                    _extract_gba(repo, n)
-                    return
-
-
-def _extract_gba(repo: str, name: str):
-    import ijson
-
-    url = f"https://huggingface.co/datasets/{repo}/resolve/main/{name}"
-    path = Path("gba_tile.json")
-    with requests.get(url, headers=UA, stream=True, timeout=600) as r:
-        r.raise_for_status()
-        with open(path, "wb") as f:
-            for chunk in r.iter_content(1 << 22):
-                f.write(chunk)
-    say(f"  downloaded {name}: {path.stat().st_size / 1e6:.0f} MB; head: {path.read_bytes()[:1500]!r}")
-    keys = set()
+        say(f"  HF {repo}: {len(names)} files; Singapore tile: {hits}")
+        for n in hits:
+            if n.startswith("LoD1/"):
+                continue
+            path = _download(f"https://huggingface.co/datasets/{repo}/resolve/main/{n}", Path("gba_poly.json"))
+            polys.update(_sg_polygons(path, repo.split("/")[0] + ":" + n.split("/")[0]))
+            path.unlink()
+    lod1 = next((n for n in ("LoD1/oceania/" + SG_TILE + ".json",)), None)
+    path = _download(f"https://huggingface.co/datasets/vitrobot/GBA.LoD1/resolve/main/{lod1}", Path("gba_lod1.json"))
+    heights, n, sgp = {}, 0, 0
     with open(path, "rb") as f:
-        parser = ijson.parse(f)
-        for i, (prefix, event, value) in enumerate(parser):
-            if i < 120:
-                say(f"    {prefix} {event} {str(value)[:80]}")
-            keys.add(prefix)
-            if i > 2000:
-                break
-    say(f"  prefixes: {sorted(keys)[:60]}")
-    out, n, with_h = [], 0, 0
-    try:
-        with open(path, "rb") as f:
-            for feat in ijson.items(f, "features.item", use_float=True):
-                n += 1
-                geom = feat.get("geometry") or {}
-                props = feat.get("properties") or {}
-                h = next((props[k] for k in ("height", "Height", "HEIGHT", "h", "building_height") if k in props), None)
-                rings = _rings(geom)
-                if not rings:
-                    continue
-                ring = rings[0]
-                xs, ys = [p[0] for p in ring], [p[1] for p in ring]
-                if not (SG[0] <= min(xs) and max(xs) <= SG[2] and SG[1] <= min(ys) and max(ys) <= SG[3]):
-                    continue
-                if h is not None:
-                    with_h += 1
-                out.append([[[round(p[1], 6), round(p[0], 6)] for p in ring], h, props.get("source") or props.get("src")])
-                if n < 3:
-                    say(f"    feature: {json.dumps(feat)[:600]}")
-    except Exception:
-        traceback.print_exc()
-    say(f"  {n} features in the tile, {len(out)} in Singapore ({with_h} with a height)")
+        for key, val in ijson.kvitems(f, "", use_float=True):
+            n += 1
+            if key.endswith("SGP"):
+                sgp += 1
+            if key in polys:
+                heights[key] = val.get("height")
+    path.unlink()
+    say(f"  LoD1: {n} heights in the tile ({sgp} with a Singapore id); matched to {len(heights)} of {len(polys)} outlines")
+    unmatched = [k for k in polys if k not in heights][:5]
+    say(f"  sample unmatched outline ids: {unmatched}; sample matched: {list(heights)[:3]}")
+    out = [[polys[k][0], h, polys[k][1]] for k, h in heights.items() if h is not None]
     if out:
-        hs = sorted(o[1] for o in out if isinstance(o[1], (int, float)))
-        if hs:
-            say(f"  height percentiles 25/50/75/95/99: {[round(hs[int(len(hs) * q)], 1) for q in (.25, .5, .75, .95, .99)]}")
+        hs = sorted(o[1] for o in out)
+        say(f"  height percentiles 25/50/75/95/99: {[round(hs[int(len(hs) * q)], 1) for q in (.25, .5, .75, .95, .99)]}")
         with gzip.open(OUT / "gba_sg.json.gz", "wt") as f:
             json.dump(out, f)
-    path.unlink()
 
 
 def _rings(geom):
@@ -254,7 +264,7 @@ def ghsl():
 
 
 def heights():
-    for part in (gba, globfp):
+    for part in (gba,):
         say(f"\n== {part.__name__}")
         part()
 
@@ -310,7 +320,7 @@ def megaloc():
         from PIL import Image
 
         t = time.time()
-        model = torch.hub.load("gmberton/MegaLoc", "get_trained_model", trust_repo=True).eval()
+        model = torch.hub.load("gmberton/MegaLoc", "get_trained_model", trust_repo=True, skip_validation=True).eval()
         say(f"  MegaLoc loaded in {time.time() - t:.0f}s")
         tf = T.Compose([T.ToTensor(), T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
                         T.Resize([322, 322], antialias=True)])
