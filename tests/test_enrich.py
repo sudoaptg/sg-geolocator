@@ -56,3 +56,14 @@ def test_buildings_from_plan_keeps_known_heights_only():
     assert len(b.labels) == 3  # the unaddressed block with no height is left out
     assert b.labels[0] == "Blk 221 Bishan Street 23"
     assert sorted({float(h) for h in b.heights}) == [12.0, 39.0, 95.0]
+
+
+def test_height_table_corrects_biased_estimates():
+    # an estimator that reads tall blocks at half height and low ones about right
+    rng = np.random.default_rng(0)
+    truth = rng.uniform(6, 90, 2000)
+    est = np.where(truth > 30, truth * 0.5, truth) + rng.normal(0, 1.5, len(truth))
+    t = E.HeightTable.fit([(a, b, 0, 3.0) for a, b in zip(truth, est)])
+    assert abs(t.predict(35.0, 0, 3.0) - 70) < 12  # a 35 m reading is a ~70 m block
+    assert abs(t.predict(12.0, 0, 3.0) - 12) < 4
+    assert t.predict(500.0, 9, 3.0) > 0  # unseen type and band still give a value

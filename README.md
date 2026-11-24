@@ -137,9 +137,14 @@ against the HDB block list. Two stacked numbers on blocks of the same street (`5
 - **HDB Property Information** (data.gov.sg): storeys and completion year of every block,
   so HDB heights are storeys x 3 m + 3 m of roof structures.
 - **Building heights from GlobalBuildingAtlas** (Zhu et al., ESSD 2025; CC BY-NC 4.0, so
-  non-commercial use only): a satellite-derived height for each outline, used for the
-  condos, offices and malls that OSM has no height for (20-40% of block-sized buildings
-  in central estates).
+  non-commercial use only): a satellite-derived height for each of 220,000 Singapore
+  outlines, for the condos, offices and malls that OSM has no height for (20-40% of
+  block-sized buildings in central estates). Raw, these are poor here: 78 m HDB blocks
+  come out at ~35 m. But they still tell tall from short, so each run fits a table from
+  (building type, estimate, footprint) to the true height of the map's own buildings
+  with tagged levels, and uses that. On non-HDB blocks with known levels (cross-validated)
+  the mean error drops from 17 m (guess by type and size) to 10 m; for flats from 29 m
+  to 14 m. Outlines the map lacks (about 7,800 of 300 m2 or more) are added.
 
 Heights are taken in that order: HDB storeys, then the map's own height or levels, then the
 satellite estimate, then a guess by building type and size.

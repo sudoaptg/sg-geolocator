@@ -632,11 +632,10 @@ def main(argv: list[str] | None = None) -> int:
         for spec in args.heights:
             name, path = spec.split("=", 1)
             polys = enrich.load_height_polys(path)
-            enrich.apply_heights(plan, polys, name, grid=grid)
-            if args.add_missing:
-                enrich.add_missing(plan, [(r, {"height_est": round(h, 1), "height_src": name}) for r, h in polys], name,
-                                   grid=grid)
+            if args.add_missing:  # first, so the added outlines get calibrated estimates below too
+                enrich.add_missing(plan, [(r, {}) for r, _ in polys], name, grid=grid)
                 grid = enrich.IdGrid(plan["buildings"])
+            enrich.apply_heights(plan, polys, name, grid=grid)
         with gzip.open(args.out, "wt") as fh:
             json.dump(plan, fh)
         print(f"{len(plan['buildings'])} buildings -> {args.out}")

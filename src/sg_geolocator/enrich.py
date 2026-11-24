@@ -86,21 +86,73 @@ def match(grid: IdGrid, xy: np.ndarray) -> tuple[int, float, float]:
     return int(vals[k]), counts[k] / len(ids), len(hit) / len(ids)
 
 
+def tagged_height(item: dict) -> float | None:
+    """The map's own roof height: `height`, else `building:levels` x 3 m (None if neither)."""
+    try:
+        if item.get("height") and float(str(item["height"]).replace("m", "").strip()) > 0:
+            return float(str(item["height"]).replace("m", "").strip())
+        if item.get("building:levels") and float(item["building:levels"]) > 0:
+            return float(item["building:levels"]) * FLOOR_M
+    except ValueError:
+        pass
+    return None
+
+
 def has_height(item: dict) -> bool:
-    for key in ("height", "building:levels"):
-        try:
-            if item.get(key) and float(str(item[key]).replace("m", "").strip()) > 0:
-                return True
-        except ValueError:
-            pass
-    return False
+    return tagged_height(item) is not None
+
+
+# Satellite height estimates are biased in Singapore (GlobalBuildingAtlas puts 78 m HDB
+# blocks at ~35 m, and flats tagged 12 storeys anywhere from 15 to 40 m), but they still
+# tell tall from short. So they are not used raw: a table maps (building type, estimate
+# band, footprint band) to the median true height of the map's own buildings that have
+# levels tagged, and that median is the height used. On non-HDB blocks with known levels
+# (5-fold cross-validation) this cut the mean error from 17 m (guess by type and size) or
+# 13 m (raw estimate) to 10 m; for flats from 29 m to 14 m.
+HEIGHT_GROUPS = {"apartments": 0, "residential": 0, "yes": 1, "commercial": 2, "office": 2, "retail": 2, "hotel": 2,
+                 "industrial": 3, "warehouse": 3, "school": 4, "public": 4, "university": 4, "hospital": 4,
+                 "house": 5, "terrace": 5, "detached": 5, "semidetached_house": 5, "bungalow": 5}
+EST_BANDS = np.array([0, 4, 6, 8, 10, 13, 16, 20, 25, 30, 40, 60, 1e9])
+AREA_BANDS = np.array([0, 2.0, 2.5, 2.7, 3.0, 3.3, 3.6, 9])  # log10 of footprint m2
+
+
+class HeightTable:
+    """Median true height by (type group, estimate band, footprint band), with coarser
+    fallbacks (type + estimate band, then estimate band alone)."""
+
+    def __init__(self, fine: dict, coarse: dict, overall: dict):
+        self.fine, self.coarse, self.overall = fine, coarse, overall
+
+    @staticmethod
+    def _keys(est, group, log_area):
+        return int(group), int(np.digitize(est, EST_BANDS)), int(np.digitize(log_area, AREA_BANDS))
+
+    @classmethod
+    def fit(cls, samples, min_fine: int = 8, min_coarse: int = 5) -> "HeightTable":
+        """samples: (true height, estimate, group, log10 area) rows."""
+        buckets: dict = {}
+        for truth, est, group, log_area in samples:
+            g, b, a = cls._keys(est, group, log_area)
+            for key in ((g, b, a), (g, b), (b,)):
+                buckets.setdefault(key, []).append(truth)
+        med = {k: float(np.median(v)) for k, v in buckets.items()}
+        n = {k: len(v) for k, v in buckets.items()}
+        return cls({k: v for k, v in med.items() if len(k) == 3 and n[k] >= min_fine},
+                   {k: v for k, v in med.items() if len(k) == 2 and n[k] >= min_coarse},
+                   {k: v for k, v in med.items() if len(k) == 1})
+
+    def predict(self, est: float, group: int, log_area: float) -> float:
+        g, b, a = self._keys(est, group, log_area)
+        return self.fine.get((g, b, a)) or self.coarse.get((g, b)) or self.overall.get((b,)) or float(est)
 
 
 def apply_heights(plan: dict, polys: list[tuple[np.ndarray, float]], source: str, grid: IdGrid | None = None,
-                  min_share: float = 0.3, log=print) -> int:
-    """Give buildings without a height the estimate of the outside polygon covering most of
-    them (polys: (lat/lon ring, height in m)). Stored as `height_est` / `height_src`, which
-    default_height uses only when the map has no height or levels of its own."""
+                  min_share: float = 0.3, calibrate: bool = True, log=print) -> int:
+    """Give buildings without a height an estimate from the outside polygons covering them
+    (polys: (lat/lon ring, height in m)), calibrated against the map's own tagged heights
+    (see HeightTable) when there are enough of them. Stored as `height_est` (with the raw
+    value in `height_raw` and the dataset in `height_src`); default_height uses it only
+    when the map has no height or levels of its own."""
     items = plan["buildings"]
     grid = grid or IdGrid(items)
     votes: dict[int, list[tuple[float, float]]] = {}
@@ -111,14 +163,30 @@ def apply_heights(plan: dict, polys: list[tuple[np.ndarray, float]], source: str
         i, share, _ = match(grid, xy)
         if i >= 0 and share >= min_share:
             votes.setdefault(i, []).append((float(h), _area(xy) * share))
-    n = 0
+    raw = {}
     for i, v in votes.items():
-        if has_height(items[i]):
-            continue
         hs, ws = np.array(v).T
         order = np.argsort(hs)
         cum = np.cumsum(ws[order])
-        items[i]["height_est"] = round(float(hs[order][np.searchsorted(cum, cum[-1] / 2)]), 1)  # weighted median
+        raw[i] = float(hs[order][np.searchsorted(cum, cum[-1] / 2)])  # area-weighted median
+    feats = {i: (HEIGHT_GROUPS.get(items[i].get("building"), 6),
+                 float(np.log10(max(_area(to_xy(*np.asarray(items[i]["pts"], float).T)), 1.0)))) for i in raw}
+    table = None
+    if calibrate:
+        samples = [(tagged_height(items[i]), raw[i], *feats[i]) for i in raw
+                   if has_height(items[i]) and not items[i].get("height_hdb")]
+        if len(samples) >= 200:
+            table = HeightTable.fit(samples)
+            err_raw = np.mean([abs(e - t) for t, e, _, _ in samples])
+            err_cal = np.mean([abs(table.predict(e, g, a) - t) for t, e, g, a in samples])
+            log(f"  {source}: calibrated on {len(samples)} buildings with tagged heights "
+                f"(mean error {err_raw:.1f} m raw, {err_cal:.1f} m calibrated, in-sample)")
+    n = 0
+    for i, h in raw.items():
+        if has_height(items[i]):
+            continue
+        items[i]["height_raw"] = round(h, 1)
+        items[i]["height_est"] = round(table.predict(h, *feats[i]) if table else h, 1)
         items[i]["height_src"] = source
         n += 1
     log(f"  {source}: heights for {n} buildings without one")
