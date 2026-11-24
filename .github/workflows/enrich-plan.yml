@@ -1,0 +1,72 @@
+name: Enrich plan map
+
+# Adds HDB block outlines, numbers, storeys and years (data.gov.sg) and per-building height
+# estimates (GlobalBuildingAtlas, when the sources release has them) to the island-wide plan
+# map. Publishes area-sgplan3-... with area.json.gz and a matching buildings.npz.
+on:
+  workflow_dispatch:
+    inputs:
+      add_missing:
+        description: "Also add outlines the map lacks (300 m2+) from the height dataset"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install numpy pillow requests
+          pip install -e . --no-deps
+      - name: Download plan map and sources (latest releases)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          tags = [t["tagName"] for t in json.loads(subprocess.check_output(["gh", "release", "list", "--limit", "100", "--json", "tagName"]))]
+          plan = next(t for t in tags if t.startswith("area-sgplan2-"))
+          subprocess.check_call(["gh", "release", "download", plan, "--pattern", "area.json.gz", "--output", "sgplan.json.gz"])
+          want = {"hdb_existing_building.geojson.gz", "hdb_property_information.csv.gz", "gba_sg.json.gz"}
+          for t in [t for t in tags if t.startswith("sources-")]:  # newest first
+              assets = {a["name"] for a in json.loads(subprocess.check_output(["gh", "release", "view", t, "--json", "assets"]))["assets"]}
+              for name in sorted(want & assets):
+                  subprocess.check_call(["gh", "release", "download", t, "--pattern", name])
+                  want.discard(name)
+          print("plan", plan, "missing sources:", want)
+          PY
+          ls -lh *.gz
+      - name: Enrich
+        run: |
+          extra=""
+          [ -f gba_sg.json.gz ] && extra="--heights gba=gba_sg.json.gz"
+          [ -f gba_sg.json.gz ] && [ "${{ inputs.add_missing }}" = "true" ] && extra="$extra --add-missing"
+          sg-geolocate enrich-plan --plan sgplan.json.gz --hdb-blocks hdb_existing_building.geojson.gz \
+            --hdb-property hdb_property_information.csv.gz $extra --out area.json.gz --buildings-out buildings.npz \
+            | tee enrich.log
+          ls -lh area.json.gz buildings.npz
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="area-sgplan3-$(date -u +%Y%m%d-%H%M)"
+          {
+            echo "Island-wide plan map with HDB block data and building height estimates."
+            echo
+            echo '```'; cat enrich.log; echo '```'
+            echo
+            echo "Map data © OpenStreetMap contributors (ODbL). HDB Existing Building and HDB Property Information"
+            echo "from data.gov.sg (Singapore Open Data Licence v1.0). Height estimates (height_src=gba) from"
+            echo "GlobalBuildingAtlas (Zhu et al., ESSD 2025), CC BY-NC 4.0: non-commercial use only."
+          } > notes.md
+          gh release create "$tag" area.json.gz buildings.npz --title "$tag" --notes-file notes.md

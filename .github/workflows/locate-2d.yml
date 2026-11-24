@@ -13,6 +13,10 @@ on:
         description: "Also run the benchmark"
         type: boolean
         default: true
+      locate:
+        description: "Locate every photo in the folder (predict --refine; slow)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -46,8 +50,8 @@ jobs:
               for name in [n for n, v in want.items() if v is None and n in assets]:
                   subprocess.check_call(["gh", "release", "download", t, "--pattern", name, "--clobber"])
                   want[name] = t
-          for prefix, out in (("area-sgplan2-", "sgplan.json.gz"), ("area-sgwater-", "sgwater.json.gz")):
-              t = next(x for x in tags if x.startswith(prefix))
+          for prefixes, out in ((("area-sgplan3-", "area-sgplan2-"), "sgplan.json.gz"), (("area-sgwater-",), "sgwater.json.gz")):
+              t = next(x for p in prefixes for x in tags if x.startswith(p))  # enriched plan map when there is one
               subprocess.check_call(["gh", "release", "download", t, "--pattern", "area.json.gz", "--output", out, "--clobber"])
           print(json.dumps(want, indent=1))
           PY
@@ -62,6 +66,7 @@ jobs:
           path: ~/.cache/torch
           key: torch-hub-eigenplaces/ResNet50/512
       - name: Locate
+        if: ${{ inputs.locate }}
         run: |
           shopt -s nullglob nocaseglob
           files=("${{ inputs.folder }}"/*.jpg "${{ inputs.folder }}"/*.jpeg "${{ inputs.folder }}"/*.png "${{ inputs.folder }}"/*.webp)
@@ -82,12 +87,23 @@ jobs:
         run: |
           sg-geolocate benchmark benchmarks/cases.json --buildings buildings.npz --names place_names.json.gz \
             --water sgwater.json.gz --plan sgplan.json.gz --transit transit.json.gz --out bench.json
+          if [ -f benchmarks/hinted.json ]; then
+            sg-geolocate benchmark benchmarks/hinted.json --images benchmarks/initial --buildings buildings.npz \
+              --names place_names.json.gz --water sgwater.json.gz --plan sgplan.json.gz --transit transit.json.gz \
+              --out hinted.json || true
+          fi
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json
+          import json, os
           d = json.load(open("bench.json"))
           print(f"\n## Benchmark: {d['solved']}/{d['total']} solved\n\n| case | error | solved | time |\n|---|---|---|---|")
           for r in d["results"]:
               print(f"| {r['name']} | {r['error_m']} m | {'yes' if r['solved'] else 'no'} | {r['seconds']} s |")
+          if os.path.exists("hinted.json"):
+              print("\n## Hinted photos (unscored)\n\n| case | best spots | time |\n|---|---|---|")
+              for r in json.load(open("hinted.json"))["results"]:
+                  top = "<br>".join(f"[{s.get('block') or ''} {s['lat']:.5f},{s['lon']:.5f}]({s.get('map', '')}) {s.get('score', '')}"
+                                    for s in r.get("top", [])) or r.get("error", "–")
+                  print(f"| {r['name']} | {top} | {r['seconds']} s |")
           PY
       - name: Save results to the repo
         if: always()
@@ -96,6 +112,7 @@ jobs:
           mkdir -p benchmarks/runs
           [ -f results.jsonl ] && cp results.jsonl "benchmarks/runs/locate-$stamp.jsonl"
           [ -f bench.json ] && cp bench.json "benchmarks/runs/bench-$stamp.json"
+          [ -f hinted.json ] && cp hinted.json "benchmarks/runs/hinted-$stamp.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add benchmarks/runs

@@ -375,7 +375,16 @@ def main(argv: list[str] | None = None) -> int:
             res = subprocess.run(cmd, capture_output=True, text=True)
             lines = [l for l in res.stdout.splitlines() if l.startswith("{")]
             spots = json.loads(lines[-1])["spots"] if lines else []
-            truth = case["truth"]
+            truth = case.get("truth")
+            if not truth:  # a photo with a hint but no confirmed answer: report where it points
+                row = {"name": case["name"], "unscored": True, "seconds": round(time.time() - t),
+                       "top": [{k: sp.get(k) for k in ("lat", "lon", "heading", "score", "block", "map") if k in sp}
+                               for sp in spots[:3]]}
+                if res.returncode:
+                    row["error"] = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else f"exit {res.returncode}"
+                rows.append(row)
+                print(json.dumps(row), flush=True)
+                continue
             def off(sp):
                 return float(np.hypot((sp["lat"] - truth["lat"]) * 111000,
                                       (sp["lon"] - truth["lon"]) * 111000 * np.cos(np.radians(1.35))))
@@ -390,10 +399,11 @@ def main(argv: list[str] | None = None) -> int:
                 row["error"] = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else f"exit {res.returncode}"
             rows.append(row)
             print(json.dumps(row), flush=True)
-        n = sum(r["solved"] for r in rows)
-        print(f"solved {n}/{len(rows)}", file=sys.stderr)
+        scored = [r for r in rows if not r.get("unscored")]
+        n = sum(r["solved"] for r in scored)
+        print(f"solved {n}/{len(scored)}", file=sys.stderr)
         if args.out:
-            Path(args.out).write_text(json.dumps({"results": rows, "solved": n, "total": len(rows)}, indent=1))
+            Path(args.out).write_text(json.dumps({"results": rows, "solved": n, "total": len(scored)}, indent=1))
         return 0
 
     if args.cmd == "collect-reddit":
