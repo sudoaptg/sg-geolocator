@@ -1,5 +1,5 @@
 {
- "note": "The first test photos (benchmarks/initial) with the owner's area hints but no confirmed answer: each run reports where the search points inside the hinted area, unscored. Two hints for one photo are run as two cases so their scores can be compared.",
+ "note": "The first test photos (benchmarks/initial) with the owner's area hints but no confirmed answer: each run reports where the plan-view search points inside the hinted area, unscored (no --render: a render search over a 500-900 m area takes an hour per photo). Two hints for one photo are run as two cases so their scores can be compared.",
  "cases": [
   {
    "name": "photo1-orchard-havelock",
@@ -9,8 +9,7 @@
     "--near",
     "1.2912,103.8325",
     "--radius",
-    "900",
-    "--render",
+    "600",
     "--auto"
    ]
   },
@@ -23,7 +22,6 @@
     "1.3073,103.7903",
     "--radius",
     "500",
-    "--render",
     "--auto",
     "--transit",
     "TRANSIT"
@@ -38,7 +36,6 @@
     "1.3332,103.7422",
     "--radius",
     "500",
-    "--render",
     "--auto",
     "--transit",
     "TRANSIT"
@@ -52,8 +49,7 @@
     "--near",
     "1.2847,103.8172",
     "--radius",
-    "800",
-    "--render",
+    "600",
     "--auto"
    ]
   },
@@ -65,8 +61,7 @@
     "--near",
     "1.3226,103.8543",
     "--radius",
-    "800",
-    "--render",
+    "600",
     "--auto"
    ]
   },
@@ -79,7 +74,6 @@
     "1.2840,103.8290",
     "--radius",
     "600",
-    "--render",
     "--auto"
    ]
   },
