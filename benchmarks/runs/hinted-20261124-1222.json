@@ -1,0 +1,189 @@
+{
+ "results": [
+  {
+   "name": "photo1-orchard-havelock",
+   "unscored": true,
+   "seconds": 232,
+   "top": [
+    {
+     "lat": 1.295831,
+     "lon": 103.834681,
+     "heading": 321.2,
+     "score": 0.797,
+     "map": "https://www.google.com/maps?q=1.295831,103.834681"
+    },
+    {
+     "lat": 1.290281,
+     "lon": 103.836096,
+     "heading": 352.7,
+     "score": 0.761,
+     "map": "https://www.google.com/maps?q=1.290281,103.836096"
+    },
+    {
+     "lat": 1.295236,
+     "lon": 103.830554,
+     "heading": 223.8,
+     "score": 0.739,
+     "map": "https://www.google.com/maps?q=1.295236,103.830554"
+    }
+   ]
+  },
+  {
+   "name": "photo2-buona-vista",
+   "unscored": true,
+   "seconds": 141,
+   "top": [
+    {
+     "lat": 1.305786,
+     "lon": 103.79012,
+     "heading": 321.8,
+     "score": 0.739,
+     "map": "https://www.google.com/maps?q=1.305786,103.79012"
+    },
+    {
+     "lat": 1.305642,
+     "lon": 103.790156,
+     "heading": 323.6,
+     "score": 0.737,
+     "map": "https://www.google.com/maps?q=1.305642,103.790156"
+    },
+    {
+     "lat": 1.304381,
+     "lon": 103.79322,
+     "heading": 109.0,
+     "score": 0.724,
+     "map": "https://www.google.com/maps?q=1.304381,103.79322"
+    }
+   ]
+  },
+  {
+   "name": "photo2-jurong-east",
+   "unscored": true,
+   "seconds": 135,
+   "top": [
+    {
+     "lat": 1.334966,
+     "lon": 103.742416,
+     "heading": 350.8,
+     "score": 0.726,
+     "map": "https://www.google.com/maps?q=1.334966,103.742416"
+    },
+    {
+     "lat": 1.33511,
+     "lon": 103.742452,
+     "heading": 349.4,
+     "score": 0.714,
+     "map": "https://www.google.com/maps?q=1.33511,103.742452"
+    },
+    {
+     "lat": 1.335074,
+     "lon": 103.742272,
+     "heading": 350.4,
+     "score": 0.711,
+     "map": "https://www.google.com/maps?q=1.335074,103.742272"
+    }
+   ]
+  },
+  {
+   "name": "photo3-bukit-merah",
+   "unscored": true,
+   "seconds": 221,
+   "top": [
+    {
+     "lat": 1.287042,
+     "lon": 103.818281,
+     "heading": 227.8,
+     "score": 0.753,
+     "map": "https://www.google.com/maps?q=1.287042,103.818281"
+    },
+    {
+     "lat": 1.283691,
+     "lon": 103.816263,
+     "heading": 275.0,
+     "score": 0.744,
+     "map": "https://www.google.com/maps?q=1.283691,103.816263"
+    },
+    {
+     "lat": 1.28261,
+     "lon": 103.816731,
+     "heading": 209.2,
+     "score": 0.734,
+     "map": "https://www.google.com/maps?q=1.28261,103.816731"
+    }
+   ]
+  },
+  {
+   "name": "photo3-whampoa",
+   "unscored": true,
+   "seconds": 236,
+   "top": [
+    {
+     "lat": 1.323105,
+     "lon": 103.850912,
+     "heading": 7.2,
+     "score": 0.776,
+     "map": "https://www.google.com/maps?q=1.323105,103.850912"
+    },
+    {
+     "lat": 1.320258,
+     "lon": 103.849866,
+     "heading": 178.6,
+     "score": 0.755,
+     "map": "https://www.google.com/maps?q=1.320258,103.849866"
+    },
+    {
+     "lat": 1.323177,
+     "lon": 103.850263,
+     "heading": 97.0,
+     "score": 0.74,
+     "map": "https://www.google.com/maps?q=1.323177,103.850263"
+    }
+   ]
+  },
+  {
+   "name": "photo5-lower-delta",
+   "unscored": true,
+   "seconds": 219,
+   "top": [
+    {
+     "lat": 1.285333,
+     "lon": 103.826873,
+     "heading": 51.2,
+     "score": 0.801,
+     "map": "https://www.google.com/maps?q=1.285333,103.826873"
+    },
+    {
+     "lat": 1.281622,
+     "lon": 103.824638,
+     "heading": 268.6,
+     "score": 0.767,
+     "map": "https://www.google.com/maps?q=1.281622,103.824638"
+    },
+    {
+     "lat": 1.288144,
+     "lon": 103.829252,
+     "heading": 81.0,
+     "score": 0.763,
+     "map": "https://www.google.com/maps?q=1.288144,103.829252"
+    }
+   ]
+  },
+  {
+   "name": "photo7-auto",
+   "unscored": true,
+   "seconds": 23,
+   "top": [
+    {
+     "lat": 1.371739,
+     "lon": 103.852537,
+     "heading": 290.4,
+     "score": 0.54,
+     "block": "Blk 596D Ang Mo Kio Street 52",
+     "map": "https://www.google.com/maps?q=1.371739,103.852537"
+    }
+   ]
+  }
+ ],
+ "solved": 0,
+ "total": 0
+}
