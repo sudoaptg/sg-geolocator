@@ -722,6 +722,10 @@ def _refine_with_resect(img, pred, args) -> list:
         argv += ["--plan", args.plan, "--render"]
     if args.transit:
         argv += ["--transit", args.transit]
+    from .clues import CACHE_DIR
+
+    if (CACHE_DIR / "place_names.json.gz").exists():  # signs naming a place become landmarks
+        argv += ["--names", str(CACHE_DIR / "place_names.json.gz")]
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
