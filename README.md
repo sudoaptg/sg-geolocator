@@ -28,8 +28,11 @@ The pipeline runs these stages and returns the most confident answer:
    jobs; only descriptors are kept). With `model: megaloc` the workflow builds the same
    index with [MegaLoc](https://github.com/gmberton/MegaLoc) (DINOv2-based, trained on
    several place-recognition datasets at once; 8448-d descriptors shrunk to 1024 with PCA
-   when the shards are merged). The locate workflows use the EigenPlaces index unless told
-   otherwise (`places` input). The **Add Commons photos** workflow adds geotagged
+   when the shards are merged). On the same held-out sessions MegaLoc's best match is within
+   50 m for 33% of photos (EigenPlaces: 24%), the median error falls from 5.7 km to 2.4 km,
+   and its confident answers (22% of photos) are within 50 m 94% of the time (EigenPlaces:
+   88% of 19%). The locate workflows use the MegaLoc index (`places` input to change it).
+   The **Add Commons photos** workflow adds geotagged
    [Wikimedia Commons](https://commons.wikimedia.org/) photos (schools, MRT stations,
    views from flats), which are taken from viewpoints the car-based Mapillary photos miss.
 4. **Landmark recognition (zero-shot):** a CLIP model scores the image against text prompts for

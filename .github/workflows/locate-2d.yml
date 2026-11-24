@@ -19,7 +19,7 @@ on:
         default: true
       places:
         description: "Place index to use: newest release whose tag starts with this"
-        default: "places-eigenplaces"
+        default: "places-megaloc"
 
 permissions:
   contents: write
@@ -64,11 +64,11 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-models-v1
+          key: hf-models-v2
       - uses: actions/cache@v4
         with:
           path: ~/.cache/torch
-          key: torch-hub-eigenplaces/ResNet50/512
+          key: torch-hub-megaloc-v1
       - name: Locate
         if: ${{ inputs.locate }}
         run: |

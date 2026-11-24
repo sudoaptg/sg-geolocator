@@ -47,7 +47,7 @@ jobs:
           for t in (x["tagName"] for x in tags):  # newest first
               assets = {a["name"] for a in json.loads(subprocess.check_output(
                   ["gh", "release", "view", t, "--json", "assets"]))["assets"]}
-              if not t.startswith("places-eigenplaces"):  # a new place model is used only once its evaluation wins
+              if not t.startswith("places-megaloc"):  # the place model whose evaluation won (MegaLoc, Nov 2026)
                   assets.discard("places.npz")
               for name in sorted(want & assets):
                   pats = {"index.npz": ["index.npz", "geocell.npz"], "mapmatch.npz": ["mapmatch.npz", "buildings.npz", "place_names.json.gz"]}.get(name, [name])
@@ -67,7 +67,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/torch
-          key: torch-hub-eigenplaces/ResNet50/512
+          key: torch-hub-megaloc-v1
       - name: Cache gazetteers (OSM roads, bus stops, OneMap lookups)
         uses: actions/cache@v4
         with:
