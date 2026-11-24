@@ -113,35 +113,31 @@ def _download(url: str, path: Path) -> Path:
     return path
 
 
-def _feature_id(feat: dict):
-    props = feat.get("properties") or {}
-    for k in ("id", "ID", "Id", "fid", "building_id", "osm_id", "source_id"):
-        if k in props:
-            return str(props[k])
-    return str(feat.get("id")) if feat.get("id") is not None else None
+def _merc_to_latlon(x: float, y: float) -> list[float]:
+    import math
+
+    r = 6378137.0
+    return [round(math.degrees(2 * math.atan(math.exp(y / r)) - math.pi / 2), 6), round(math.degrees(x / r), 6)]
 
 
 def _sg_polygons(path: Path, label: str) -> dict:
-    """id -> (ring as [lat, lon] rows, source) for features inside Singapore's box."""
+    """LoD1 key (source + id + region) -> (ring as [lat, lon] rows, source) for the tile's
+    Singapore buildings (region SGP). Coordinates in the files are Web Mercator metres."""
     import ijson
 
     out, n = {}, 0
     with open(path, "rb") as f:
         for feat in ijson.items(f, "features.item", use_float=True):
             n += 1
-            if n <= 2:
-                say(f"    {label} feature: {json.dumps(feat)[:700]}")
+            props = feat.get("properties") or {}
+            if props.get("region") != "SGP":
+                continue
             rings = _rings(feat.get("geometry") or {})
             if not rings:
                 continue
-            ring = rings[0]
-            x, y = ring[0][0], ring[0][1]
-            if not (SG[0] <= x <= SG[2] and SG[1] <= y <= SG[3]):
-                continue
-            fid = _feature_id(feat)
-            if fid is not None:
-                out[fid] = ([[round(p[1], 6), round(p[0], 6)] for p in ring], label)
-    say(f"  {label}: {n} features in the tile, {len(out)} in Singapore's box")
+            key = f"{props.get('source', '')}{props.get('id', '')}{props['region']}"
+            out[key] = ([_merc_to_latlon(p[0], p[1]) for p in rings[0]], props.get("source", label))
+    say(f"  {label}: {n} features in the tile, {len(out)} in Singapore")
     return out
 
 

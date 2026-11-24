@@ -135,6 +135,142 @@ class TextReader:
         return out
 
 
+# --------------------------------------------------------------------------- stacked block numbers
+
+# HDB blocks often carry their number as digits stacked one above another down a column
+# ("2/2/1"). Text detectors look for horizontal lines and miss them, and reading a whole
+# stack as one rotated line drops repeated digits ("221" -> "21", since the recogniser
+# merges identical neighbouring characters). So: find character-sized MSER regions, group
+# them into columns, lay each column's characters side by side on a clean white strip with
+# gaps, and read that strip.
+
+_LOOKALIKE = {"8": "B", "0": "D", "4": "A", "6": "G"}  # digit misread for an HDB block letter
+
+
+def glyph_boxes(gray):
+    """(x, y, w, h) of character-sized MSER regions (dark-on-light and light-on-dark)."""
+    import cv2
+
+    H = gray.shape[0]
+    boxes = []
+    for img in (gray, 255 - gray):
+        _, bb = cv2.MSER_create(delta=4, min_area=30, max_area=4000, max_variation=0.5).detectRegions(img)
+        boxes += [tuple(int(v) for v in b) for b in bb]
+    keep = []
+    for x, y, w, h in sorted(set(boxes), key=lambda b: -b[2] * b[3]):
+        if not (0.006 * H <= h <= 0.05 * H and 1.0 <= h / w <= 5.0):
+            continue
+        if any(max(0, min(x + w, X + Wd) - max(x, X)) * max(0, min(y + h, Y + Hd) - max(y, Y)) > 0.6 * min(w * h, Wd * Hd)
+               for X, Y, Wd, Hd in keep):
+            continue  # nearly the same pixels as a region already kept
+        keep.append((x, y, w, h))
+    return keep
+
+
+def _shape(gray, b):
+    import cv2
+    import numpy as np
+
+    x, y, w, h = b  # with a 2-pixel border, so plain shapes (a solid window) still have edges to compare
+    p = cv2.resize(gray[max(0, y - 2): y + h + 2, max(0, x - 2): x + w + 2].astype(np.float32), (16, 24))
+    p -= p.mean()
+    return p / (np.linalg.norm(p) + 1e-6)
+
+
+def glyph_stacks(boxes, gray, max_len: int = 5) -> list[list[tuple]]:
+    """Columns of 2-5 characters one above another: centred within a third of a width,
+    heights within a third of each other, gaps under a character height. A column whose
+    characters all look alike (windows, railings) is dropped."""
+    boxes = sorted(boxes, key=lambda b: b[1])
+    out, used = [], set()
+    for i, a in enumerate(boxes):
+        if i in used:
+            continue
+        chain, cur = [i], a
+        for j in range(i + 1, len(boxes)):
+            b = boxes[j]
+            if j in used:
+                continue
+            gap = b[1] - (cur[1] + cur[3])
+            if abs(cur[0] + cur[2] / 2 - b[0] - b[2] / 2) <= 0.35 * max(cur[2], b[2]) + 1 \
+                    and 0.75 <= b[3] / cur[3] <= 1.33 and -0.1 * cur[3] <= gap <= 1.2 * cur[3]:
+                chain.append(j)
+                cur = b
+                if len(chain) == max_len:
+                    break
+            elif b[1] > cur[1] + 2.5 * cur[3]:
+                break
+        if len(chain) < 2:
+            continue
+        shapes = [_shape(gray, boxes[k]) for k in chain]
+        if min(float((p * q).sum()) for n, p in enumerate(shapes) for q in shapes[n + 1:]) > 0.8:
+            continue
+        used.update(chain)
+        out.append([boxes[k] for k in chain])
+    return out
+
+
+def stack_strip(gray, stack, h_out: int = 24):
+    """The stack's characters normalised to dark on white and laid side by side (BGR)."""
+    import cv2
+    import numpy as np
+
+    scale = h_out / max(b[3] for b in stack)
+    pieces = []
+    for x, y, w, h in stack:
+        g = gray[max(0, y - 1): y + h + 1, max(0, x - 1): x + w + 1].astype(np.float32)
+        bg = np.median(np.concatenate([g[0], g[-1], g[:, 0], g[:, -1]]))
+        inner = g[1:-1, 1:-1] if g.shape[0] > 2 and g.shape[1] > 2 else g
+        ink = np.percentile(inner, 10 if inner.mean() < bg else 90)
+        n = np.clip((g - ink) / ((bg - ink) or 1e-3), 0, 1)  # 0 = ink, 1 = wall
+        n = cv2.resize(n, (max(1, round(n.shape[1] * scale)), max(1, round(n.shape[0] * scale))),
+                       interpolation=cv2.INTER_CUBIC)
+        pad = round(0.3 * h_out)
+        pieces.append(np.pad(np.clip(n, 0, 1), ((pad, pad), (pad // 2, pad // 2)), constant_values=1.0))
+    H = max(p.shape[0] for p in pieces)
+    pieces = [np.pad(p, (((H - p.shape[0]) // 2, H - p.shape[0] - (H - p.shape[0]) // 2), (0, 0)), constant_values=1.0)
+              for p in pieces]
+    strip = (np.hstack([np.ones((H, 8))] + pieces + [np.ones((H, 8))]) * 255).astype(np.uint8)
+    return cv2.cvtColor(strip, cv2.COLOR_GRAY2BGR)
+
+
+def block_number_variants(text: str) -> list[str]:
+    """A read block number and the same with a look-alike last character ("5968" -> "596B")."""
+    t = text.strip().upper().replace(" ", "")
+    out = [t] if re.fullmatch(r"\d{2,4}[A-Z]?", t) else []
+    if len(t) >= 3 and t[-1] in _LOOKALIKE and re.fullmatch(r"\d{2,3}", t[:-1]):
+        out.append(t[:-1] + _LOOKALIKE[t[-1]])
+    return out
+
+
+def stacked_numbers(path, recognizer=None, min_score: float = 0.5) -> list[tuple[str, float, float]]:
+    """(text, score, x across the photo 0-1) for each column of stacked characters that
+    reads as a block number, best first."""
+    import cv2
+    import numpy as np
+    from PIL import Image
+
+    rgb = np.asarray(Image.open(path).convert("RGB"))
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    stacks = glyph_stacks(glyph_boxes(gray), gray)
+    if not stacks:
+        return []
+    if recognizer is None:
+        from rapidocr_onnxruntime import RapidOCR
+
+        recognizer = RapidOCR().text_recognizer
+    reads = recognizer([stack_strip(gray, s) for s in stacks])
+    reads = reads[0] if isinstance(reads, tuple) else reads
+    out = []
+    for stack, (text, score) in zip(stacks, reads):
+        text = str(text).replace(" ", "").upper()
+        # at least two different characters: a column of identical marks reads "11"/"111"
+        if float(score) >= min_score and len(set(text)) >= 2 and block_number_variants(text):
+            x = (stack[0][0] + stack[0][2] / 2) / rgb.shape[1]
+            out.append((text, float(score), float(x)))
+    return sorted(out, key=lambda r: -r[1])
+
+
 def _starts(size: int, tile: int, step: int) -> list[int]:
     """Tile offsets covering `size`, the last tile flush with the edge."""
     if size <= tile:

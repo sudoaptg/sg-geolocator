@@ -751,6 +751,22 @@ def _auto_hints(args, b):
         nums = [(t.strip().upper(), xy) for t, xy in texts.items()
                 if re.fullmatch(r"\d{2,4}[A-Z]?|\d[A-Z]", t.strip().upper())]
         nums = [(t, xy) for t, xy in nums if plan2d.block_candidates(b, t, min_height=0)]
+        if not nums:  # digits stacked down a column ("2/2/1"), which line-based OCR misses
+            from .clues import block_number_variants, stacked_numbers
+
+            for text, score, x in stacked_numbers(args.image):
+                if len(text) < 3 or score < 0.6:  # two-glyph columns are too often windows or railings
+                    continue
+                t = next((v for v in block_number_variants(text) if plan2d.block_candidates(b, v, min_height=0)), None)
+                if t:
+                    nums.append((t, (x, 0.5)))
+            if len(nums) > 1:  # several stacks: prefer numbers whose blocks share a street with another
+                streets = {t: {b.labels[i].split(" ", 2)[-1].lower() for i in plan2d.block_candidates(b, t, min_height=0)}
+                           for t, _ in nums}
+                shared = [(t, xy) for t, xy in nums if any(streets[t] & streets[u] for u, _ in nums if u != t)]
+                nums = shared or nums
+            if nums:
+                found.append("stacked digits " + ", ".join(t for t, _ in nums))
         if nums:
             t, (x, _) = max(nums, key=lambda n: len(n[0]))
             args.block = f"{t}={x:.4f}"
