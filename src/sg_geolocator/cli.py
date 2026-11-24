@@ -737,7 +737,9 @@ def _auto_hints(args, b):
     found = []
     if not args.block:
         texts = TextReader().read_positions(args.image)
-        nums = [(t.strip().upper(), xy) for t, xy in texts.items() if re.fullmatch(r"\d{1,4}[A-Z]?", t.strip().upper())]
+        # A lone digit is too often a misread (a window frame, a sign fragment) to pin a block on.
+        nums = [(t.strip().upper(), xy) for t, xy in texts.items()
+                if re.fullmatch(r"\d{2,4}[A-Z]?|\d[A-Z]", t.strip().upper())]
         nums = [(t, xy) for t, xy in nums if plan2d.block_candidates(b, t, min_height=0)]
         if nums:
             t, (x, _) = max(nums, key=lambda n: len(n[0]))
