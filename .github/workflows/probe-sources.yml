@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: |
-          pip install requests numpy pillow rapidocr onnxruntime huggingface_hub safetensors
+          pip install requests numpy pillow rapidocr onnxruntime huggingface_hub safetensors ijson
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
       - run: python scripts/probe_sources.py ${{ inputs.parts }}
       - name: Publish raw files
